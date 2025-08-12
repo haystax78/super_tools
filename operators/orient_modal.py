@@ -7,6 +7,19 @@ from math import radians
 from ..utils import bmesh_utils, math_utils, view3d_utils, viewport_drawing, axis_constraints, performance_utils
 
 
+class VIEW3D_MT_super_tools_proportional(bpy.types.Menu):
+    bl_label = "Super Tools Proportional Settings"
+    bl_idname = "VIEW3D_MT_super_tools_proportional"
+
+    def draw(self, context):
+        layout = self.layout
+        ts = context.scene.tool_settings
+        layout.prop(ts, "use_proportional_edit", text="Enable Proportional Editing")
+        layout.prop(ts, "proportional_edit_falloff", text="Falloff")
+        layout.prop(ts, "use_proportional_connected", text="Connected Only")
+        layout.prop(ts, "proportional_size", text="Radius")
+
+
 class MESH_OT_super_orient_modal(bpy.types.Operator):
     """Modal operator to orient selected faces away from connected geometry"""
     bl_idname = "mesh.super_orient_modal"
@@ -36,6 +49,10 @@ class MESH_OT_super_orient_modal(bpy.types.Operator):
         
         # Update mesh
         bmesh.update_edit_mesh(obj.data)
+
+    def update_hud(self, context):
+        # HUD disabled for now
+        return
 
     def adjust_proportional_falloff(self, context, new_size):
         """
@@ -129,6 +146,27 @@ class MESH_OT_super_orient_modal(bpy.types.Operator):
         print(f"DEBUG: About to reapply mouse transformation. Current mouse pos: {self.current_mouse_pos}")
         self.apply_mouse_transformation(context)
         print(f"DEBUG: Finished reapplying mouse transformation")
+        # Update HUD
+        self.update_hud(context)
+
+    def _reset_and_reapply_after_toggle_off(self, context):
+        """Reset vertices to their original positions, switch to non-proportional originals map, and reapply current mouse transform."""
+        # Store and restore mouse pos similar to adjust_proportional_falloff
+        current_mouse_before_reset = self.current_mouse_pos.copy()
+        # Reset using current original_vert_positions (which contain proportional originals)
+        self.reset_to_original_state(context)
+        # IMPORTANT: After reset, recompute the non-proportional pivot BEFORE applying transform
+        obj = context.active_object
+        self.pivot_point = math_utils.calculate_border_vertices_centroid(
+            self.selected_faces, self.bm, obj.matrix_world
+        )
+        # Update initial direction to pivot to keep spatial relationship consistent
+        self.initial_direction_to_pivot = (self.pivot_point - self.original_faces_centroid).normalized()
+        # Switch original map to selected verts initial positions for non-proportional mode
+        self.original_vert_positions = {v: co.copy() for v, co in self.initial_selected_vert_positions.items()}
+        # Restore mouse and reapply
+        self.current_mouse_pos = current_mouse_before_reset
+        self.apply_mouse_transformation(context)
 
     def apply_mouse_transformation(self, context):
         """
@@ -235,6 +273,8 @@ class MESH_OT_super_orient_modal(bpy.types.Operator):
         
         # Get all vertices from selected faces
         self.selected_verts = list(set(v for f in selected_faces for v in f.verts))
+        # Master cache of initial positions for selected verts
+        self.initial_selected_vert_positions = {v: v.co.copy() for v in self.selected_verts}
         
         # Cache original selection centroid in LOCAL SPACE for proportional calculations
         # This ensures falloff is always calculated from the original position, not current moved position
@@ -290,18 +330,103 @@ class MESH_OT_super_orient_modal(bpy.types.Operator):
             selection_centroid = math_utils.calculate_faces_centroid(self.selected_faces, obj.matrix_world)
             viewport_drawing.start_proportional_circle_drawing(selection_centroid, self.proportional_size)
             viewport_drawing.start_pivot_cross_drawing(self.pivot_point)
+        # HUD disabled for now
+        self.update_hud(context)
+
+        # Cache last seen tool settings to detect external changes (e.g., menu)
+        ts = context.scene.tool_settings
+        self._ts_use_proportional = bool(ts.use_proportional_edit)
+        self._ts_size = float(ts.proportional_size)
+        self._ts_falloff = ts.proportional_edit_falloff
+        self._ts_connected = bool(ts.use_proportional_connected)
         
         # Add modal handler
         context.window_manager.modal_handler_add(self)
         return {'RUNNING_MODAL'}
 
+    def _sync_tool_settings_and_apply(self, context):
+        """Detect and apply changes made via the Tool Settings (e.g., quick menu)."""
+        ts = context.scene.tool_settings
+        changed = False
+
+        # Proportional enable/disable via menu
+        if bool(ts.use_proportional_edit) != self._ts_use_proportional:
+            changed = True
+            if ts.use_proportional_edit and not self.use_proportional:
+                # Enable proportional: start overlays then adjust
+                self.use_proportional = True
+                self.proportional_size = ts.proportional_size
+                self.proportional_falloff = ts.proportional_edit_falloff
+                self.use_connected_only = ts.use_proportional_connected
+                selection_centroid = math_utils.calculate_faces_centroid(self.selected_faces, context.edit_object.matrix_world)
+                viewport_drawing.start_proportional_circle_drawing(selection_centroid, self.proportional_size)
+                viewport_drawing.start_pivot_cross_drawing(self.pivot_point)
+                self.adjust_proportional_falloff(context, self.proportional_size)
+            elif not ts.use_proportional_edit and self.use_proportional:
+                # Disable proportional: stop overlays then reset/reapply
+                self.use_proportional = False
+                viewport_drawing.stop_proportional_circle_drawing()
+                self._reset_and_reapply_after_toggle_off(context)
+
+        # Radius changed via menu while proportional is on
+        if self.use_proportional and abs(float(ts.proportional_size) - self._ts_size) > 1e-9:
+            changed = True
+            self.adjust_proportional_falloff(context, float(ts.proportional_size))
+
+        # Falloff type changed via menu while proportional is on
+        if self.use_proportional and ts.proportional_edit_falloff != self._ts_falloff:
+            changed = True
+            self.proportional_falloff = ts.proportional_edit_falloff
+            self.adjust_proportional_falloff(context, self.proportional_size)
+
+        # Connected only changed via menu while proportional is on
+        if self.use_proportional and bool(ts.use_proportional_connected) != self._ts_connected:
+            changed = True
+            self.use_connected_only = bool(ts.use_proportional_connected)
+            self.adjust_proportional_falloff(context, self.proportional_size)
+
+        if changed:
+            # Update cache and HUD/overlays
+            self._ts_use_proportional = bool(ts.use_proportional_edit)
+            self._ts_size = float(ts.proportional_size)
+            self._ts_falloff = ts.proportional_edit_falloff
+            self._ts_connected = bool(ts.use_proportional_connected)
+            self.update_hud(context)
 
 
     def modal(self, context, event):
         obj = context.edit_object
+        # Pass through raw modifier key events to allow viewport navigation combos
+        if event.type in {'LEFT_SHIFT', 'RIGHT_SHIFT', 'LEFT_CTRL', 'RIGHT_CTRL', 'LEFT_ALT', 'RIGHT_ALT'}:
+            return {'PASS_THROUGH'}
+        
+        # Sync any changes made via the Shift+O menu (tool settings) into the modal state
+        self._sync_tool_settings_and_apply(context)
         
         # Handle axis constraint toggles
         if self.axis_constraints.handle_constraint_event(event, "Super Orient"):
+            self.update_hud(context)
+            return {'RUNNING_MODAL'}
+
+        elif event.type in {"ONE","TWO","THREE","FOUR","FIVE","SIX","SEVEN"} and event.value == 'PRESS' and self.use_proportional:
+            # Map number keys to falloff types
+            falloffs = [
+                'SMOOTH',        # 1
+                'SPHERE',        # 2
+                'ROOT',          # 3
+                'INVERSE_SQUARE',# 4
+                'SHARP',         # 5
+                'LINEAR',        # 6
+                'CONSTANT',      # 7
+            ]
+            idx_map = {'ONE':0,'TWO':1,'THREE':2,'FOUR':3,'FIVE':4,'SIX':5,'SEVEN':6}
+            ts = context.scene.tool_settings
+            new_falloff = falloffs[idx_map[event.type]]
+            ts.proportional_edit_falloff = new_falloff
+            self.proportional_falloff = new_falloff
+            print(f"Super Orient: Falloff set to {new_falloff}")
+            # Recompute proportional set with new falloff and refresh overlays via adjust
+            self.adjust_proportional_falloff(context, self.proportional_size)
             return {'RUNNING_MODAL'}
         
         elif event.type == 'WHEELUPMOUSE' and self.use_proportional:
@@ -309,7 +434,6 @@ class MESH_OT_super_orient_modal(bpy.types.Operator):
             new_size = self.proportional_size * 1.1
             print(f"Super Orient: Proportional size increased to {new_size:.3f}")
             self.adjust_proportional_falloff(context, new_size)
-            
             return {'RUNNING_MODAL'}
             
         elif event.type == 'WHEELDOWNMOUSE' and self.use_proportional:
@@ -335,6 +459,35 @@ class MESH_OT_super_orient_modal(bpy.types.Operator):
             self.adjust_proportional_falloff(context, new_size)
             
             return {'RUNNING_MODAL'}
+        
+        elif event.type == 'O' and event.shift:
+            # Quick proportional settings menu
+            bpy.ops.wm.call_menu(name=VIEW3D_MT_super_tools_proportional.bl_idname)
+            return {'RUNNING_MODAL'}
+        
+        elif event.type == 'O' and event.value == 'PRESS':
+            # Toggle proportional editing during modal
+            ts = context.scene.tool_settings
+            self.use_proportional = not self.use_proportional
+            ts.use_proportional_edit = self.use_proportional
+            if self.use_proportional:
+                # Initialize proportional state and overlays; rebuild proportional verts via adjust
+                self.proportional_size = ts.proportional_size
+                self.proportional_falloff = ts.proportional_edit_falloff
+                self.use_connected_only = ts.use_proportional_connected
+                selection_centroid = math_utils.calculate_faces_centroid(self.selected_faces, obj.matrix_world)
+                viewport_drawing.start_proportional_circle_drawing(selection_centroid, self.proportional_size)
+                viewport_drawing.start_pivot_cross_drawing(self.pivot_point)
+                # Rebuild proportional vertices and update pivot/circle/HUD consistently
+                self.adjust_proportional_falloff(context, self.proportional_size)
+            else:
+                # Turn off proportional, stop overlays
+                viewport_drawing.stop_proportional_circle_drawing()
+                # Proper reset like falloff change: reset first, then recompute pivot and reapply without proportional weights
+                self._reset_and_reapply_after_toggle_off(context)
+            self.update_hud(context)
+            return {'RUNNING_MODAL'}
+
             
         elif event.type == 'MOUSEMOVE':
             # Update current mouse position
@@ -350,7 +503,7 @@ class MESH_OT_super_orient_modal(bpy.types.Operator):
             # Confirm operation
             print("Super Orient Modal: CONFIRMING operation")
             
-            # Stop circle drawing
+            # Stop overlays
             if self.use_proportional:
                 viewport_drawing.stop_proportional_circle_drawing()
             
@@ -365,7 +518,7 @@ class MESH_OT_super_orient_modal(bpy.types.Operator):
             # Cancel operation - restore original positions
             print("Super Orient Modal: CANCELLING operation")
             
-            # Stop circle drawing
+            # Stop overlays
             if self.use_proportional:
                 viewport_drawing.stop_proportional_circle_drawing()
             
@@ -386,11 +539,13 @@ class MESH_OT_super_orient_modal(bpy.types.Operator):
 
 
 def register():
+    bpy.utils.register_class(VIEW3D_MT_super_tools_proportional)
     bpy.utils.register_class(MESH_OT_super_orient_modal)
 
 
 def unregister():
     bpy.utils.unregister_class(MESH_OT_super_orient_modal)
+    bpy.utils.unregister_class(VIEW3D_MT_super_tools_proportional)
 
 
 if __name__ == "__main__":

@@ -4,6 +4,7 @@ import mathutils
 from gpu_extras.batch import batch_for_shader
 from mathutils import Vector
 import math
+import blf
 
 
 class ProportionalCircleDrawer:
@@ -263,3 +264,108 @@ def stop_proportional_circle_drawing():
     drawer = get_circle_drawer()
     drawer.hide_cross()
     drawer.stop_drawing()
+
+
+# ------------------------
+# DPI-aware HUD Text Drawer
+# ------------------------
+
+class HUDTextDrawer:
+    """Draws DPI-aware text HUD in the viewport (POST_PIXEL)."""
+
+    def __init__(self):
+        self.draw_handler = None
+        self.lines = []
+        self.font_id = 0  # default font
+
+    def _dpi_ui_scale(self):
+        prefs = bpy.context.preferences
+        ui_scale = getattr(prefs.view, 'ui_scale', 1.0)
+        dpi = getattr(prefs.system, 'dpi', 72)
+        return ui_scale, dpi
+
+    def _draw(self):
+        # Basic setup
+        gpu.state.blend_set('ALPHA')
+
+        ui_scale, dpi = self._dpi_ui_scale()
+        base_size = 12
+        size_px = max(10, int(base_size * ui_scale))
+        padding = int(12 * ui_scale)
+        line_height = int(size_px * 1.4)
+
+        # Position top-left with padding
+        x = padding
+        # Draw a small translucent backdrop for readability
+        try:
+            from gpu_extras.presets import draw_texture_2d
+        except Exception:
+            draw_texture_2d = None
+
+        # Draw text lines
+        blf.size(self.font_id, size_px, dpi)
+        y = 0
+        # Compute from top of region
+        region = bpy.context.region
+        if region:
+            y = region.height - padding - size_px
+        else:
+            y = 200
+
+        for line in self.lines:
+            blf.position(self.font_id, x, y, 0)
+            blf.color(self.font_id, 1.0, 1.0, 1.0, 0.9)
+            blf.draw(self.font_id, line)
+            y -= line_height
+
+        gpu.state.blend_set('NONE')
+
+    def start(self):
+        if self.draw_handler is None:
+            self.draw_handler = bpy.types.SpaceView3D.draw_handler_add(
+                self._draw, (), 'WINDOW', 'POST_PIXEL'
+            )
+            for area in bpy.context.screen.areas:
+                if area.type == 'VIEW_3D':
+                    area.tag_redraw()
+
+    def stop(self):
+        if self.draw_handler is not None:
+            bpy.types.SpaceView3D.draw_handler_remove(self.draw_handler, 'WINDOW')
+            self.draw_handler = None
+            for area in bpy.context.screen.areas:
+                if area.type == 'VIEW_3D':
+                    area.tag_redraw()
+
+    def set_lines(self, lines):
+        self.lines = list(lines) if lines else []
+        for area in bpy.context.screen.areas:
+            if area.type == 'VIEW_3D':
+                area.tag_redraw()
+
+
+_hud_drawer = None
+
+
+def get_hud_drawer():
+    global _hud_drawer
+    if _hud_drawer is None:
+        _hud_drawer = HUDTextDrawer()
+    return _hud_drawer
+
+
+def start_hud_drawing(initial_lines=None):
+    drawer = get_hud_drawer()
+    if initial_lines:
+        drawer.set_lines(initial_lines)
+    drawer.start()
+
+
+def update_hud_text(lines):
+    drawer = get_hud_drawer()
+    drawer.set_lines(lines)
+
+
+def stop_hud_drawing():
+    drawer = get_hud_drawer()
+    drawer.stop()

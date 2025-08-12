@@ -38,3 +38,12 @@ A Blender addon that provides advanced mesh editing tools for enhanced modeling 
 ## Requirements
 
 - Blender 4.3 or later
+
+## Changelog
+
+### v0.0.2
+- Pass-through for modifier keys (Shift/Ctrl/Alt) during modals, enabling normal viewport navigation combos.
+- Super Orient: Shift+O quick proportional menu now syncs live with the modal (enable/disable, radius, falloff, connected).
+- 'O' key toggles proportional editing on and off during Super Orient modal.
+- Falloff curves assigned to 1-7 keys during Super Orient modal in proportional editing mode.
+
