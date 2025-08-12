@@ -1,0 +1,34 @@
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.env
+.venv
+
+# Blender temp/backup
+*.blend1
+*.blend2
+*.blend@
+*.blend~
+*.blend.old
+*.blend.lock
+
+# Build artifacts
+*.zip
+dist/
+build/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS generated files
+Thumbs.db
+ehthumbs.db

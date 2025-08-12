@@ -1,0 +1,23 @@
+name: Build and attach addon zip
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  build-zip:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Create zip
+        run: |
+          cd ..
+          zip -r super_tools.zip super_tools -x "*/.git/*" "*/__pycache__/*" "*.pyc" "*.pyo" "*.pyd" "*/.DS_Store"
+          mv super_tools.zip super_tools/super_tools.zip
+
+      - name: Upload asset
+        uses: softprops/action-gh-release@v2
+        with:
+          files: super_tools.zip
