@@ -8,6 +8,8 @@ A Blender addon that provides advanced mesh editing tools for enhanced modeling 
 - **Super Orient**: Proportional editing tool for reorienting face selections with topology-aware falloff
 - **Spatial Relationship Logic**: Maintains consistent orientation behavior across all tools
 - **Proportional Editing Integration**: Seamless integration with Blender's proportional editing settings
+ - **Auto-Updater**: Optionally checks and installs updates from GitHub on startup
+ - **Performance-Optimized Falloff**: KDTree + NumPy powered proportional weights with connected-only support
 
 ## Installation
 
@@ -47,3 +49,12 @@ A Blender addon that provides advanced mesh editing tools for enhanced modeling 
 - 'O' key toggles proportional editing on and off during Super Orient modal.
 - Falloff curves assigned to 1-7 keys during Super Orient modal in proportional editing mode.
 
+### v0.0.3
+- Added auto-updater to check for updates and notify the user if a new version is available. Optional auto-install toggle in Preferences.
+- Super Orient proportional editing:
+  - Scale-aware world-space KDTree queries and distances (robust under object scale).
+  - Border-anchored falloff: distances measured from nearest selected vertex; selected verts keep full weight.
+  - Corrected falloff curves across all modes to strictly satisfy w(0)=1 and w(1)=0 (including Inverse Square).
+  - Major performance improvements: vectorized batched nearest-seed distances, per-frame caches, single expanded KD query for large selections, and precomputed connected components for Connected Only.
+  - Stable interaction: changing falloff radius preserves current mouse-applied transform for smooth UX.
+  - Consistent visualization: falloff circle drawn as a world-space ring on the view plane for accurate radius regardless of camera direction.

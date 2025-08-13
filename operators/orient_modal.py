@@ -2,7 +2,9 @@ import bpy
 import bmesh
 import mathutils
 from mathutils import Vector
+from mathutils.kdtree import KDTree
 from math import radians
+import numpy as np
 
 from ..utils import bmesh_utils, math_utils, view3d_utils, viewport_drawing, axis_constraints, performance_utils
 
@@ -89,12 +91,11 @@ class MESH_OT_super_orient_modal(bpy.types.Operator):
         # DEBUG: Check vertex positions after reset
         print(f"DEBUG: After reset - sample vertex at: {sample_vert.co}")
         
-        # THEN: Recalculate proportional vertices with new size FROM ORIGINAL POSITIONS (optimized)
+        # THEN: Recalculate proportional vertices with new size FROM ORIGINAL POSITIONS (vectorized)
         obj = context.active_object
-        print(f"DEBUG ORIENT: Passing center point to falloff (adjust): {self.original_selection_centroid_local}")
-        self.proportional_verts = performance_utils.get_proportional_vertices_optimized(
-            self.selected_faces, self.bm, self.proportional_size, self.proportional_falloff, 
-            self.original_selection_centroid_local, self.falloff_cache, obj.matrix_world, use_border_anchors=True, use_topology_distance=self.use_connected_only
+        print(f"DEBUG ORIENT: Vectorized falloff recompute from: {self.original_selection_centroid_local}")
+        self.proportional_verts = self._compute_proportional_vertices_np(
+            self.original_selection_centroid_local, self.proportional_size, self.proportional_falloff, self.use_connected_only
         )
         print(f"DEBUG: Recalculated {len(self.proportional_verts)} proportional vertices")
         
@@ -148,6 +149,206 @@ class MESH_OT_super_orient_modal(bpy.types.Operator):
         print(f"DEBUG: Finished reapplying mouse transformation")
         # Update HUD
         self.update_hud(context)
+
+    def _build_spatial_caches(self, obj):
+        """Build KDTree (world-space), coords arrays (local+world), and adjacency for connected-only fast masking.
+        Also builds a KDTree of seed (selected) vertices in world space for border-based falloff.
+        """
+        self.bm.verts.ensure_lookup_table()
+        verts = self.bm.verts
+        n = len(verts)
+        mw = obj.matrix_world
+        # Local and world space coordinates arrays (N,3)
+        self._coords_np = np.empty((n, 3), dtype=np.float32)
+        self._coords_world_np = np.empty((n, 3), dtype=np.float32)
+        for i, v in enumerate(verts):
+            co = v.co
+            self._coords_np[i, 0] = co.x
+            self._coords_np[i, 1] = co.y
+            self._coords_np[i, 2] = co.z
+            cow = mw @ co
+            self._coords_world_np[i, 0] = cow.x
+            self._coords_world_np[i, 1] = cow.y
+            self._coords_world_np[i, 2] = cow.z
+        # KDTree on world space (so radius respects object scale)
+        kd_all = KDTree(n)
+        for i, v in enumerate(verts):
+            cow = mw @ v.co
+            kd_all.insert(cow, i)
+        kd_all.balance()
+        self._kd = kd_all
+        # Selection seed indices
+        self._seed_indices = {v.index for f in self.selected_faces for v in f.verts}
+        # Adjacency (only if needed later)
+        self._adjacency = None
+        # Map index->bmesh vert for quick backref
+        self._index_to_vert = {v.index: v for v in verts}
+        # Precompute world matrix for transforms
+        self._mw = mw
+        # Build seed (selected) world coords and KDTree for border distance
+        seed_list = sorted(list(self._seed_indices))
+        if seed_list:
+            self._seed_world_np = self._coords_world_np[seed_list]
+            kd_seeds = KDTree(len(seed_list))
+            for i, idx in enumerate(seed_list):
+                kd_seeds.insert(tuple(self._seed_world_np[i]), idx)
+            kd_seeds.balance()
+            self._kd_seeds = kd_seeds
+            self._seed_index_list = seed_list
+            # Precompute seed centroid and max seed distance (world space) for expanded single-query path
+            self._seed_centroid_world = self._seed_world_np.mean(axis=0)
+            diff = self._seed_world_np - self._seed_centroid_world[None, :]
+            self._max_seed_dist = float(np.sqrt(np.maximum((diff * diff).sum(axis=1), 0.0)).max()) if self._seed_world_np.shape[0] > 0 else 0.0
+        else:
+            self._seed_world_np = np.empty((0, 3), dtype=np.float32)
+            self._kd_seeds = None
+            self._seed_index_list = []
+            self._seed_centroid_world = np.array([0.0, 0.0, 0.0], dtype=np.float32)
+            self._max_seed_dist = 0.0
+
+    def _ensure_adjacency(self):
+        if self._adjacency is not None:
+            return
+        verts = self.bm.verts
+        n = len(verts)
+        adj = [[] for _ in range(n)]
+        for v in verts:
+            idx = v.index
+            for e in v.link_edges:
+                adj[idx].append(e.other_vert(v).index)
+        self._adjacency = adj
+        # Also compute connected components once (for fast connected-only masking)
+        self._component_id = [-1] * n
+        comp = 0
+        for i in range(n):
+            if self._component_id[i] != -1:
+                continue
+            # BFS
+            q = [i]
+            self._component_id[i] = comp
+            qi = 0
+            while qi < len(q):
+                u = q[qi]; qi += 1
+                for nb in self._adjacency[u]:
+                    if self._component_id[nb] == -1:
+                        self._component_id[nb] = comp
+                        q.append(nb)
+            comp += 1
+
+    def _falloff_weights_np(self, dist, radius, falloff):
+        """Compute weights for normalized distances via NumPy. dist is (k,) local-space distance array."""
+        t = np.clip(dist / max(radius, 1e-12), 0.0, 1.0).astype(np.float32)
+        if falloff == 'SMOOTH':
+            # 1 - smoothstep(t) with smoothstep = 3t^2 - 2t^3
+            w = 1.0 - (t * t * (3.0 - 2.0 * t))
+        elif falloff == 'SPHERE':
+            # Spherical: sqrt(1 - t^2)
+            w = np.sqrt(np.clip(1.0 - t * t, 0.0, 1.0))
+        elif falloff == 'ROOT':
+            # 1 - sqrt(t)
+            w = 1.0 - np.sqrt(t)
+        elif falloff == 'INVERSE_SQUARE':
+            # Normalized inverse-square-like curve: w = ((1+a)/(1+a t^2) - 1) / a
+            # Ensures w(0)=1 and w(1)=0. Larger 'a' makes a steeper drop near zero.
+            a = 4.0
+            base = 1.0 / (1.0 + a * (t * t))
+            w = (((1.0 + a) * base) - 1.0) / a
+        elif falloff == 'SHARP':
+            # 1 - t^2
+            w = 1.0 - (t * t)
+        elif falloff == 'LINEAR':
+            # 1 - t
+            w = 1.0 - t
+        elif falloff == 'CONSTANT':
+            # 1 inside radius, 0 at/after radius
+            w = (t < 1.0).astype(np.float32)
+        else:
+            # Default to linear
+            w = 1.0 - t
+        return np.clip(w, 0.0, 1.0)
+
+    def _compute_proportional_vertices_np(self, origin_local, radius, falloff, connected_only):
+        """Vectorized proportional set/weights. Returns {BMVert: weight}.
+        Falloff distance is measured from the selection border (nearest selected vertex), not the centroid.
+        """
+        include_seeds_always = True
+        # Candidate set: union of ranges around each seed so radius grows from border outward
+        cand_set = set()
+        if self._kd_seeds is not None and self._seed_index_list:
+            # Choose strategy based on seed count
+            many_seeds = len(self._seed_index_list) > 128
+            # Ensure adjacency/components ready for connected-only filtering
+            if connected_only and (getattr(self, '_component_id', None) is None):
+                self._ensure_adjacency()
+            if many_seeds:
+                # Single expanded query around seed centroid covers all border neighborhoods
+                expanded = radius + max(self._max_seed_dist, 0.0)
+                for _co, idx, _d in self._kd.find_range(tuple(self._seed_centroid_world), expanded):
+                    if connected_only and self._component_id[int(idx)] != self._component_id[int(self._seed_index_list[0])]:
+                        # Keep only same component as seeds (assuming all seeds are in same component)
+                        continue
+                    cand_set.add(int(idx))
+            else:
+                # Union of per-seed ranges
+                for i, seed_idx in enumerate(self._seed_index_list):
+                    seed_co = self._seed_world_np[i]
+                    for _co, idx, _d in self._kd.find_range(tuple(seed_co), radius):
+                        if connected_only:
+                            if self._component_id[int(idx)] != self._component_id[int(seed_idx)]:
+                                continue
+                        cand_set.add(int(idx))
+        else:
+            # Fallback: use centroid-based range (should be rare)
+            origin_world = self._mw @ origin_local
+            for _co, idx, _d in self._kd.find_range(origin_world, radius):
+                cand_set.add(int(idx))
+        # Nothing found; still include seeds if requested
+        if not cand_set and not include_seeds_always:
+            return {}
+        idxs = np.fromiter(cand_set, dtype=np.int32) if cand_set else np.empty((0,), dtype=np.int32)
+        # Distances: nearest distance to any seed (border distance), vectorized in batches
+        if idxs.size and self._seed_world_np.shape[0] > 0:
+            pts = self._coords_world_np[idxs]  # (k,3)
+            seeds = self._seed_world_np       # (s,3)
+            k = pts.shape[0]
+            s = seeds.shape[0]
+            dist2_min = np.empty((k,), dtype=np.float32)
+            # Precompute seed norms once
+            seed_norm2 = np.sum(seeds * seeds, axis=1, dtype=np.float32)  # (s,)
+            batch = 4096
+            for start in range(0, k, batch):
+                end = min(start + batch, k)
+                p = pts[start:end]  # (b,3)
+                p_norm2 = np.sum(p * p, axis=1, dtype=np.float32)  # (b,)
+                # d^2 = ||p||^2 + ||s||^2 - 2 p·s
+                dot = p @ seeds.T  # (b,s)
+                d2 = (p_norm2[:, None] + seed_norm2[None, :]) - 2.0 * dot
+                # Clamp small negatives due to FP
+                d2 = np.clip(d2, 0.0, None, dtype=np.float32)
+                dist2_min[start:end] = d2.min(axis=1)
+            dist = np.sqrt(dist2_min, dtype=np.float32)
+        else:
+            dist = np.empty((0,), dtype=np.float32)
+
+        # Connected-only mask is already enforced during candidate building via component equality
+        
+        # Compute weights
+        w = self._falloff_weights_np(dist, radius, falloff) if idxs.size else np.empty((0,), dtype=np.float32)
+        # Build dict BMVert->weight (exclude zeros for cleanliness)
+        out = {}
+        for i, weight in zip(idxs.tolist(), w.tolist()):
+            if weight <= 0.0:
+                continue
+            v = self._index_to_vert.get(int(i))
+            if v is not None:
+                out[v] = weight
+        # Force include selected verts with full weight 1.0
+        if include_seeds_always:
+            for si in self._seed_indices:
+                v = self._index_to_vert.get(int(si))
+                if v is not None:
+                    out[v] = 1.0
+        return out
 
     def _reset_and_reapply_after_toggle_off(self, context):
         """Reset vertices to their original positions, switch to non-proportional originals map, and reapply current mouse transform."""
@@ -256,6 +457,9 @@ class MESH_OT_super_orient_modal(bpy.types.Operator):
         print(f"Super Orient: Proportional editing settings - Connected Only: {self.use_connected_only}")
         print(f"Super Orient: Will use {'topology-based' if self.use_connected_only else 'radial'} falloff distance")
         
+        # Build spatial caches for fast proportional queries
+        self._build_spatial_caches(obj)
+
         # Calculate pivot point based on proportional editing settings
         if self.use_proportional:
             # Use proportional border vertices (outside falloff radius) as pivot
@@ -304,11 +508,10 @@ class MESH_OT_super_orient_modal(bpy.types.Operator):
         self.falloff_cache = performance_utils.ProportionalFalloffCache()
         
         if self.use_proportional:
-            # Get proportional vertices and their weights using original selection center (optimized)
-            print(f"DEBUG ORIENT: Passing center point to falloff: {self.original_selection_centroid_local}")
-            self.proportional_verts = performance_utils.get_proportional_vertices_optimized(
-                self.selected_faces, self.bm, self.proportional_size, self.proportional_falloff, 
-                self.original_selection_centroid_local, self.falloff_cache, obj.matrix_world, use_border_anchors=True, use_topology_distance=self.use_connected_only
+            # Get proportional vertices and their weights using vectorized path
+            print(f"DEBUG ORIENT: Vectorized falloff init from: {self.original_selection_centroid_local}")
+            self.proportional_verts = self._compute_proportional_vertices_np(
+                self.original_selection_centroid_local, self.proportional_size, self.proportional_falloff, self.use_connected_only
             )
             print(f"Super Orient: Proportional editing enabled - {len(self.proportional_verts)} vertices affected")
             

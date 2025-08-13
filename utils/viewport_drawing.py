@@ -31,46 +31,32 @@ class ProportionalCircleDrawer:
         self._create_circle_batch()
         
     def _create_circle_batch(self):
-        """Create GPU batch for drawing the circle in screen space"""
-        # Get current context for screen space calculations
+        """Create GPU batch for drawing the circle as a true 3D circle on the view plane.
+        This uses world-space radius and a basis aligned to the current view, so size stays consistent
+        regardless of camera direction or object/world axes.
+        """
         context = bpy.context
         region = context.region
         rv3d = context.space_data.region_3d
-        
+
         if not region or not rv3d:
             return
-            
-        # Project center point to screen space
-        from bpy_extras.view3d_utils import location_3d_to_region_2d
-        screen_center = location_3d_to_region_2d(region, rv3d, self.center_point)
-        
-        if not screen_center:
-            return
-            
-        # Calculate screen space radius (convert 3D radius to screen pixels)
-        # Use a reference point to determine screen space scaling
-        ref_point = self.center_point + Vector((self.radius, 0, 0))
-        screen_ref = location_3d_to_region_2d(region, rv3d, ref_point)
-        
-        if not screen_ref:
-            return
-            
-        screen_radius = (screen_ref - screen_center).length
-        
-        # Generate circle vertices in screen space, then convert back to 3D
+
+        # View basis in world space
+        # view_normal points from camera into the scene
+        view_normal = rv3d.view_rotation @ Vector((0, 0, -1))
+        view_right = (rv3d.view_rotation @ Vector((1, 0, 0))).normalized()
+        view_up = (rv3d.view_rotation @ Vector((0, 1, 0))).normalized()
+
+        # Generate circle vertices directly in world space
+        c = self.center_point
+        r = float(self.radius)
         vertices = []
-        from bpy_extras.view3d_utils import region_2d_to_location_3d
-        
         for i in range(self.segments):
             angle = 2.0 * math.pi * i / self.segments
-            # Create circle in screen space
-            screen_x = screen_center.x + screen_radius * math.cos(angle)
-            screen_y = screen_center.y + screen_radius * math.sin(angle)
-            
-            # Convert back to 3D world space at the original center's depth
-            world_pos = region_2d_to_location_3d(region, rv3d, (screen_x, screen_y), self.center_point)
-            if world_pos:
-                vertices.append((world_pos.x, world_pos.y, world_pos.z))
+            offset = (math.cos(angle) * view_right + math.sin(angle) * view_up) * r
+            p = c + offset
+            vertices.append((p.x, p.y, p.z))
         
         if not vertices:
             return
@@ -142,6 +128,8 @@ class ProportionalCircleDrawer:
     
     def draw_circle(self):
         """Draw function called by Blender's draw handler"""
+        # Recreate the batch every draw so orientation and size stay correct as the view changes
+        self._create_circle_batch()
         if self.batch and self.shader:
             # Set line properties
             gpu.state.line_width_set(2.0)

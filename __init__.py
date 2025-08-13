@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Super Tools",
     "author": "MattGPT",
-    "version": (0, 0, 2),
+    "version": (0, 0, 3),
     "blender": (4, 3, 0),
     "location": "View3D > Edit Mode > Face Context Menu",
     "description": "Advanced mesh editing tools including Super Extrude and Super Orient operators",
