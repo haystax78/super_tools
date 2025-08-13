@@ -1,6 +1,7 @@
 import mathutils
 from mathutils import Vector
 from math import radians
+from . import falloff_utils
 
 
 def calculate_faces_centroid(faces, world_matrix):
@@ -339,56 +340,8 @@ def get_proportional_vertices(selected_faces, bm, proportional_size, falloff_typ
         else:
             # Normalize distance (0 to 1)
             normalized_distance = distance / proportional_size
-            
-            # Apply falloff curve (matching Blender's proportional editing curves)
-            # normalized_distance: 0.0 at center, 1.0 at edge
-            # weight should be: 1.0 at center, 0.0 at edge
-            
-            if falloff_type == 'SMOOTH':
-                # Smooth falloff: smooth hermite interpolation
-                t = normalized_distance
-                weight = 1.0 - (3.0 * t * t - 2.0 * t * t * t)
-            elif falloff_type == 'SPHERE':
-                # Spherical falloff: quarter circle curve (cosine-based)
-                t = normalized_distance
-                if t >= 1.0:
-                    weight = 0.0
-                else:
-                    # Use cosine for smooth spherical falloff
-                    import math
-                    weight = math.cos(t * math.pi * 0.5)
-            elif falloff_type == 'ROOT':
-                # Root falloff: square root curve
-                t = normalized_distance
-                weight = max(0.0, (1.0 - t) ** 0.5)
-            elif falloff_type == 'INVERSE_SQUARE':
-                # Inverse square falloff: 1/(1+x^2)
-                t = normalized_distance
-                if t < 1.0:
-                    weight = 1.0 / (1.0 + t * t)
-                else:
-                    weight = 0.0
-            elif falloff_type == 'SHARP':
-                # Sharp falloff: quadratic
-                t = normalized_distance
-                weight = max(0.0, (1.0 - t) * (1.0 - t))
-            elif falloff_type == 'LINEAR':
-                # Linear falloff: straight line from 1.0 to 0.0
-                t = normalized_distance
-                weight = max(0.0, 1.0 - t)
-            elif falloff_type == 'CONSTANT':
-                # Constant falloff: all vertices within range get full influence
-                weight = 1.0
-            elif falloff_type == 'RANDOM':
-                # Random falloff: random weight for each vertex within range
-                import random
-                # Use vertex index as seed for consistent randomness
-                random.seed(vert.index)
-                weight = random.random()
-            else:
-                # Default to smooth
-                t = normalized_distance
-                weight = 1.0 - (3.0 * t * t - 2.0 * t * t * t)
+            # Use unified falloff utilities for consistency
+            weight = falloff_utils.calculate_falloff_weight_scalar(normalized_distance, falloff_type)
         
         proportional_verts[vert] = weight
     
@@ -488,8 +441,12 @@ def apply_spatial_relationship_transformation(
         world_matrix: Object's world transformation matrix
         weights: Optional dict of {vertex: weight} for proportional editing (None = full weight)
     """
-    # Convert rotation matrix from world space to local space
-    local_rotation_matrix = world_matrix.inverted().to_3x3() @ rotation_matrix @ world_matrix.to_3x3()
+    # Convert rotation matrix from world to local using ROTATION-ONLY parts to avoid scale skew
+    # Extract object's world rotation (ignore scale) via quaternion
+    R_obj_world = world_matrix.to_quaternion().to_matrix()
+    R_obj_world_inv = R_obj_world.transposed()  # inverse of pure rotation
+    # Similarity transform using rotation-only basis
+    local_rotation_matrix = R_obj_world_inv @ rotation_matrix @ R_obj_world
     
     for vert in vertices:
         if vert not in original_positions:

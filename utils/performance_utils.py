@@ -6,7 +6,9 @@ Provides optimized algorithms for dense mesh processing.
 import bmesh
 import mathutils
 from mathutils import Vector
+import numpy as np
 import math
+from . import falloff_utils
 
 
 class ProportionalFalloffCache:
@@ -318,36 +320,9 @@ def calculate_topology_distances_from_anchors(bm, anchor_verts, max_distance, wo
 def calculate_falloff_weight(normalized_distance, falloff_type):
     """
     Calculate falloff weight for a normalized distance.
-    Separated for better performance and reusability.
+    Uses unified falloff utilities for consistency.
     """
-    t = normalized_distance
-    
-    if falloff_type == 'SMOOTH':
-        return 1.0 - (3.0 * t * t - 2.0 * t * t * t)
-    elif falloff_type == 'SPHERE':
-        if t >= 1.0:
-            return 0.0
-        return math.cos(t * math.pi * 0.5)
-    elif falloff_type == 'ROOT':
-        return max(0.0, (1.0 - t) ** 0.5)
-    elif falloff_type == 'INVERSE_SQUARE':
-        if t < 1.0:
-            return 1.0 / (1.0 + t * t)
-        else:
-            return 0.0
-    elif falloff_type == 'SHARP':
-        return max(0.0, (1.0 - t) * (1.0 - t))
-    elif falloff_type == 'LINEAR':
-        return max(0.0, 1.0 - t)
-    elif falloff_type == 'CONSTANT':
-        return 1.0
-    elif falloff_type == 'RANDOM':
-        # Note: For random, we'd need the vertex index for consistent seeding
-        # This is a simplified version
-        return 0.5  # Placeholder
-    else:
-        # Default to smooth
-        return 1.0 - (3.0 * t * t - 2.0 * t * t * t)
+    return falloff_utils.calculate_falloff_weight_scalar(normalized_distance, falloff_type)
 
 
 def batch_vertex_transformation(vertices_weights, translation, rotation_matrix, rotation_center, batch_size=1000):

@@ -6,7 +6,7 @@ from mathutils.kdtree import KDTree
 from math import radians
 import numpy as np
 
-from ..utils import bmesh_utils, math_utils, view3d_utils, viewport_drawing, axis_constraints, performance_utils
+from ..utils import math_utils, performance_utils, viewport_drawing, axis_constraints, falloff_utils, view3d_utils
 
 
 class VIEW3D_MT_super_tools_proportional(bpy.types.Menu):
@@ -134,6 +134,9 @@ class MESH_OT_super_orient_modal(bpy.types.Operator):
         
         # Update the initial spatial relationship since pivot point may have changed
         self.initial_direction_to_pivot = (self.pivot_point - self.original_faces_centroid).normalized()
+        pivot_point_local = obj.matrix_world.inverted() @ self.pivot_point
+        dir_local = (pivot_point_local - self.original_faces_centroid_local)
+        self.initial_direction_to_pivot_local = dir_local.normalized() if dir_local.length > 0 else dir_local
         print(f"DEBUG: Updated initial direction to pivot: {self.initial_direction_to_pivot}")
         
         # Update circle and cross visualization
@@ -236,36 +239,8 @@ class MESH_OT_super_orient_modal(bpy.types.Operator):
             comp += 1
 
     def _falloff_weights_np(self, dist, radius, falloff):
-        """Compute weights for normalized distances via NumPy. dist is (k,) local-space distance array."""
-        t = np.clip(dist / max(radius, 1e-12), 0.0, 1.0).astype(np.float32)
-        if falloff == 'SMOOTH':
-            # 1 - smoothstep(t) with smoothstep = 3t^2 - 2t^3
-            w = 1.0 - (t * t * (3.0 - 2.0 * t))
-        elif falloff == 'SPHERE':
-            # Spherical: sqrt(1 - t^2)
-            w = np.sqrt(np.clip(1.0 - t * t, 0.0, 1.0))
-        elif falloff == 'ROOT':
-            # 1 - sqrt(t)
-            w = 1.0 - np.sqrt(t)
-        elif falloff == 'INVERSE_SQUARE':
-            # Normalized inverse-square-like curve: w = ((1+a)/(1+a t^2) - 1) / a
-            # Ensures w(0)=1 and w(1)=0. Larger 'a' makes a steeper drop near zero.
-            a = 4.0
-            base = 1.0 / (1.0 + a * (t * t))
-            w = (((1.0 + a) * base) - 1.0) / a
-        elif falloff == 'SHARP':
-            # 1 - t^2
-            w = 1.0 - (t * t)
-        elif falloff == 'LINEAR':
-            # 1 - t
-            w = 1.0 - t
-        elif falloff == 'CONSTANT':
-            # 1 inside radius, 0 at/after radius
-            w = (t < 1.0).astype(np.float32)
-        else:
-            # Default to linear
-            w = 1.0 - t
-        return np.clip(w, 0.0, 1.0)
+        """Compute weights for normalized distances via NumPy. Uses unified falloff utilities."""
+        return falloff_utils.calculate_falloff_weights_vectorized(dist, radius, falloff)
 
     def _compute_proportional_vertices_np(self, origin_local, radius, falloff, connected_only):
         """Vectorized proportional set/weights. Returns {BMVert: weight}.
@@ -361,8 +336,11 @@ class MESH_OT_super_orient_modal(bpy.types.Operator):
         self.pivot_point = math_utils.calculate_border_vertices_centroid(
             self.selected_faces, self.bm, obj.matrix_world
         )
-        # Update initial direction to pivot to keep spatial relationship consistent
+        # Update initial direction to pivot to keep spatial relationship consistent (world and local)
         self.initial_direction_to_pivot = (self.pivot_point - self.original_faces_centroid).normalized()
+        pivot_point_local = obj.matrix_world.inverted() @ self.pivot_point
+        dir_local = (pivot_point_local - self.original_faces_centroid_local)
+        self.initial_direction_to_pivot_local = dir_local.normalized() if dir_local.length > 0 else dir_local
         # Switch original map to selected verts initial positions for non-proportional mode
         self.original_vert_positions = {v: co.copy() for v, co in self.initial_selected_vert_positions.items()}
         # Restore mouse and reapply
@@ -411,6 +389,16 @@ class MESH_OT_super_orient_modal(bpy.types.Operator):
             self.original_faces_centroid_local, constrained_translation, 
             self.pivot_point, self.initial_direction_to_pivot, obj.matrix_world
         )
+
+        # Compose optional twist around the axis defined by direction to pivot (WORLD space)
+        # rotation_matrix from calculate_spatial_relationship_rotation is in WORLD space,
+        # so build the twist in WORLD space as well to avoid mixing spaces.
+        if getattr(self, 'twist_angle', 0.0) != 0.0:
+            axis_world = getattr(self, 'initial_direction_to_pivot', None)
+            if axis_world is not None and axis_world.length > 0.0:
+                axis_world = axis_world.normalized()
+                twist_world = mathutils.Matrix.Rotation(self.twist_angle, 3, axis_world)
+                rotation_matrix = twist_world @ rotation_matrix
         
         if self.use_proportional:
             # Apply transformation to proportional vertices with weights
@@ -494,14 +482,21 @@ class MESH_OT_super_orient_modal(bpy.types.Operator):
         
         # Axis constraint state
         self.axis_constraints = axis_constraints.create_constraint_state()
+
+        # Twist state (in radians); positive twists around pivot-direction axis
+        self.twist_angle = 0.0
+        self._twist_step = radians(2.0)
         
         # Cache original selection state for transformation calculations
         # Store both local and world space versions for consistent coordinate handling
         self.original_faces_centroid_local = math_utils.calculate_faces_centroid(self.selected_faces, mathutils.Matrix.Identity(4))
         self.original_faces_centroid = obj.matrix_world @ self.original_faces_centroid_local
         
-        # Store the initial spatial relationship between selection and pivot (world space)
+        # Store the initial spatial relationship between selection and pivot (world and local)
         self.initial_direction_to_pivot = (self.pivot_point - self.original_faces_centroid).normalized()
+        pivot_point_local = obj.matrix_world.inverted() @ self.pivot_point
+        dir_local = (pivot_point_local - self.original_faces_centroid_local)
+        self.initial_direction_to_pivot_local = dir_local.normalized() if dir_local.length > 0 else dir_local
         print(f"Super Orient: Initial direction from selection to pivot: {self.initial_direction_to_pivot}")
         
         # Initialize performance cache for proportional falloff calculations
@@ -611,7 +606,7 @@ class MESH_OT_super_orient_modal(bpy.types.Operator):
             self.update_hud(context)
             return {'RUNNING_MODAL'}
 
-        elif event.type in {"ONE","TWO","THREE","FOUR","FIVE","SIX","SEVEN"} and event.value == 'PRESS' and self.use_proportional:
+        elif event.type in {"ONE","TWO","THREE","FOUR","FIVE","SIX","SEVEN","EIGHT"} and event.value == 'PRESS' and self.use_proportional:
             # Map number keys to falloff types
             falloffs = [
                 'SMOOTH',        # 1
@@ -621,8 +616,9 @@ class MESH_OT_super_orient_modal(bpy.types.Operator):
                 'SHARP',         # 5
                 'LINEAR',        # 6
                 'CONSTANT',      # 7
+                'RANDOM',        # 8
             ]
-            idx_map = {'ONE':0,'TWO':1,'THREE':2,'FOUR':3,'FIVE':4,'SIX':5,'SEVEN':6}
+            idx_map = {'ONE':0,'TWO':1,'THREE':2,'FOUR':3,'FIVE':4,'SIX':5,'SEVEN':6,'EIGHT':7}
             ts = context.scene.tool_settings
             new_falloff = falloffs[idx_map[event.type]]
             ts.proportional_edit_falloff = new_falloff
@@ -632,6 +628,27 @@ class MESH_OT_super_orient_modal(bpy.types.Operator):
             self.adjust_proportional_falloff(context, self.proportional_size)
             return {'RUNNING_MODAL'}
         
+        # Twist controls (take precedence when Shift is held)
+        elif event.shift and event.type == 'WHEELUPMOUSE':
+            self.twist_angle += self._twist_step
+            self.apply_mouse_transformation(context)
+            return {'RUNNING_MODAL'}
+
+        elif event.shift and event.type == 'WHEELDOWNMOUSE':
+            self.twist_angle -= self._twist_step
+            self.apply_mouse_transformation(context)
+            return {'RUNNING_MODAL'}
+
+        elif event.shift and event.type == 'LEFT_BRACKET' and event.value == 'PRESS':
+            self.twist_angle -= self._twist_step
+            self.apply_mouse_transformation(context)
+            return {'RUNNING_MODAL'}
+
+        elif event.shift and event.type == 'RIGHT_BRACKET' and event.value == 'PRESS':
+            self.twist_angle += self._twist_step
+            self.apply_mouse_transformation(context)
+            return {'RUNNING_MODAL'}
+
         elif event.type == 'WHEELUPMOUSE' and self.use_proportional:
             # Increase proportional size
             new_size = self.proportional_size * 1.1
