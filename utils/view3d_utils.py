@@ -47,6 +47,29 @@ def mouse_delta_to_plane_delta(region, rv3d, mouse_prev, mouse_cur, plane_point,
         return Vector((0, 0, 0))
 
 
+def apply_precision_mouse(mouse_prev, mouse_cur, enable_precision: bool, scale: float = 0.5):
+    """
+    Return an adjusted mouse_cur where the delta from mouse_prev is scaled down
+    when precision mode is enabled. Useful for Shift-based fine movement.
+
+    Args:
+        mouse_prev: tuple(float, float) previous mouse position (x, y)
+        mouse_cur: tuple(float, float) current mouse position (x, y)
+        enable_precision: whether precision mode is active (e.g., Shift held)
+        scale: scale factor to apply to delta when precision is enabled (default 0.5)
+
+    Returns:
+        tuple(float, float): adjusted mouse_cur applying precision scaling if enabled
+    """
+    if not enable_precision:
+        return mouse_cur
+    if mouse_prev is None or mouse_cur is None:
+        return mouse_cur
+    dx = mouse_cur[0] - mouse_prev[0]
+    dy = mouse_cur[1] - mouse_prev[1]
+    return (mouse_prev[0] + dx * scale, mouse_prev[1] + dy * scale)
+
+
 def region_2d_to_vector_3d(region, rv3d, coord):
     """Convert region 2D coordinates to 3D vector"""
     from bpy_extras.view3d_utils import region_2d_to_vector_3d

@@ -43,6 +43,11 @@ A Blender addon that provides advanced mesh editing tools for enhanced modeling 
 
 ## Changelog
 
+### v0.0.5
+- Precision Movement: Added reusable precision mouse handling (`utils/input_utils.PrecisionMouseState`). Holding Shift slows mouse-driven transforms without jumps in both Super Orient and Super Extrude modals. Default scale set to 0.3.
+- Super Orient Falloff Visualization: Falloff circle now centers on the selection border centroid (unselected verts adjacent to selected), matching border-based falloff measurement for accurate low-radius behavior.
+- Refactors: Reduced duplication by centralizing precision handling; groundwork laid for further modularization of proportional overlay calls.
+
 ### v0.0.4
 - Super Orient: Added twist control driven by Shift + Mouse Wheel or Shift + [ / ] to rotate selection around the pivot-direction axis.
 - Fixed twist axis under object transforms by composing twist in world space and converting with rotation-only matrices to avoid scale skew.

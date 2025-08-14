@@ -1,5 +1,6 @@
 import mathutils
 from mathutils import Vector
+from mathutils.kdtree import KDTree
 from math import radians
 from . import falloff_utils
 
@@ -221,42 +222,43 @@ def calculate_proportional_border_vertices_centroid(selected_faces, bm, world_ma
         for vert in face.verts:
             selected_verts.add(vert)
     
-    # Calculate selection centroid in WORLD SPACE for accurate distance calculations
+    # Build KDTree of SELECTED vertices in WORLD space so distances are measured
+    # from the SELECTION BORDER (minimum distance to any selected vertex), not
+    # from the selection volume center.
     if not selected_verts:
         return Vector((0, 0, 0))
-    
-    selection_center_world = Vector((0, 0, 0))
-    for vert in selected_verts:
-        selection_center_world += world_matrix @ vert.co
-    selection_center_world /= len(selected_verts)
-    
-    print(f"DEBUG PIVOT: Selection center (world): {selection_center_world}")
+
+    selected_world = [world_matrix @ v.co for v in selected_verts]
+    kd = KDTree(len(selected_world))
+    for i, co in enumerate(selected_world):
+        kd.insert(co, i)
+    kd.balance()
+
     print(f"DEBUG PIVOT: Proportional size (world): {proportional_size:.3f}")
-    
+
     # Find vertices that are:
-    # 1. Connected by an edge to vertices within the proportional radius
-    # 2. But are themselves OUTSIDE the proportional radius
-    # All distance calculations in WORLD SPACE for accuracy on scaled objects
+    # 1) within proportional radius measured from the selection BORDER (min distance
+    #    to any selected vertex), and
+    # 2) their neighbors that are OUTSIDE the radius -> these form the proportional border
     border_vertices = set()
-    
-    # First, find all vertices within proportional radius (world space distances)
+
     proportional_verts = set()
     for vert in bm.verts:
         vert_world = world_matrix @ vert.co
-        distance = (vert_world - selection_center_world).length
-        if distance <= proportional_size:
+        # distance to selection BORDER = nearest selected vertex distance
+        _, _, min_dist = kd.find(vert_world)
+        if min_dist <= proportional_size:
             proportional_verts.add(vert)
-    
-    print(f"DEBUG PIVOT: Found {len(proportional_verts)} vertices within proportional radius")
-    
+
+    print(f"DEBUG PIVOT: Found {len(proportional_verts)} vertices within proportional radius (border-based)")
+
     # Now find vertices outside the radius that connect to vertices inside
     for vert_inside in proportional_verts:
         for edge in vert_inside.link_edges:
             other_vert = edge.other_vert(vert_inside)
-            # If the other vertex is outside the proportional radius (world space distance)
             other_world = world_matrix @ other_vert.co
-            distance_other = (other_world - selection_center_world).length
-            if distance_other > proportional_size:
+            _, _, dist_other = kd.find(other_world)
+            if dist_other > proportional_size:
                 border_vertices.add(other_vert)
     
     print(f"Super Orient: Found {len(border_vertices)} proportional border vertices (outside radius {proportional_size:.3f})")

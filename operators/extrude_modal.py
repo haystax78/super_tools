@@ -2,7 +2,7 @@ import bpy
 import bmesh
 import mathutils
 from math import radians
-from ..utils import bmesh_utils, math_utils, view3d_utils, axis_constraints, viewport_drawing
+from ..utils import math_utils, viewport_drawing, axis_constraints, view3d_utils, input_utils, bmesh_utils
 
 
 class MESH_OT_super_extrude_modal(bpy.types.Operator):
@@ -50,6 +50,9 @@ class MESH_OT_super_extrude_modal(bpy.types.Operator):
         
         # Store initial mouse position
         self.initial_mouse = (event.mouse_region_x, event.mouse_region_y)
+        # Precision mode state using reusable helper
+        self.precision = input_utils.PrecisionMouseState(scale=0.3)
+        self.precision.reset(self.initial_mouse)
         
         # Calculate selection center in world space for mouse interaction
         self.selection_center = math_utils.calculate_faces_centroid(selected_faces, obj.matrix_world)
@@ -239,10 +242,17 @@ class MESH_OT_super_extrude_modal(bpy.types.Operator):
             view_normal = rv3d.view_rotation @ mathutils.Vector((0, 0, -1))
             
             # Calculate translation vector in world space
+            # Precision-adjusted mouse using helper
+            raw = (event.mouse_region_x, event.mouse_region_y)
+            # For extrude we don't maintain a "current_adjusted" screen pos; use last adjusted or initial
+            last_adjusted = getattr(self, "_current_mouse_effective", self.initial_mouse)
+            adjusted = self.precision.on_move(raw, event.shift, last_adjusted)
+            self._current_mouse_effective = adjusted
+
             translation_world = view3d_utils.mouse_delta_to_plane_delta(
                 region, rv3d, 
                 self.initial_mouse, 
-                (event.mouse_region_x, event.mouse_region_y),
+                adjusted,
                 self.selection_center,
                 view_normal
             )

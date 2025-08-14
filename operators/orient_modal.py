@@ -6,7 +6,7 @@ from mathutils.kdtree import KDTree
 from math import radians
 import numpy as np
 
-from ..utils import math_utils, performance_utils, viewport_drawing, axis_constraints, falloff_utils, view3d_utils
+from ..utils import math_utils, performance_utils, viewport_drawing, axis_constraints, falloff_utils, view3d_utils, input_utils
 
 
 class VIEW3D_MT_super_tools_proportional(bpy.types.Menu):
@@ -140,9 +140,9 @@ class MESH_OT_super_orient_modal(bpy.types.Operator):
         print(f"DEBUG: Updated initial direction to pivot: {self.initial_direction_to_pivot}")
         
         # Update circle and cross visualization
-        # Convert local centroid to world space for visualization
-        original_centroid_world = obj.matrix_world @ self.original_selection_centroid_local
-        viewport_drawing.update_proportional_circle(original_centroid_world, self.proportional_size)
+        # Center the falloff circle at the SELECTION BORDER centroid (unselected verts adjacent to selected)
+        border_center = math_utils.calculate_border_vertices_centroid(self.selected_faces, self.bm, obj.matrix_world)
+        viewport_drawing.update_proportional_circle(border_center, self.proportional_size)
         viewport_drawing.update_pivot_cross(self.pivot_point)
         
         # IMPORTANT: Reapply current mouse transformation after reset
@@ -479,6 +479,9 @@ class MESH_OT_super_orient_modal(bpy.types.Operator):
         # Cache original mouse position for proportional editing calculations
         self.initial_mouse_pos = Vector((event.mouse_region_x, event.mouse_region_y))
         self.current_mouse_pos = self.initial_mouse_pos.copy()
+        # Precision mode state using reusable helper
+        self.precision = input_utils.PrecisionMouseState(scale=0.3)
+        self.precision.reset((event.mouse_region_x, event.mouse_region_y))
         
         # Axis constraint state
         self.axis_constraints = axis_constraints.create_constraint_state()
@@ -525,8 +528,9 @@ class MESH_OT_super_orient_modal(bpy.types.Operator):
         
         # Start drawing proportional circle and pivot cross if proportional editing is enabled
         if self.use_proportional:
-            selection_centroid = math_utils.calculate_faces_centroid(self.selected_faces, obj.matrix_world)
-            viewport_drawing.start_proportional_circle_drawing(selection_centroid, self.proportional_size)
+            # Center the circle at the SELECTION BORDER centroid (unselected verts adjacent to selected)
+            border_center = math_utils.calculate_border_vertices_centroid(self.selected_faces, self.bm, obj.matrix_world)
+            viewport_drawing.start_proportional_circle_drawing(border_center, self.proportional_size)
             viewport_drawing.start_pivot_cross_drawing(self.pivot_point)
         # HUD disabled for now
         self.update_hud(context)
@@ -556,8 +560,9 @@ class MESH_OT_super_orient_modal(bpy.types.Operator):
                 self.proportional_size = ts.proportional_size
                 self.proportional_falloff = ts.proportional_edit_falloff
                 self.use_connected_only = ts.use_proportional_connected
-                selection_centroid = math_utils.calculate_faces_centroid(self.selected_faces, context.edit_object.matrix_world)
-                viewport_drawing.start_proportional_circle_drawing(selection_centroid, self.proportional_size)
+                # Center the circle at the SELECTION BORDER centroid (unselected verts adjacent to selected)
+                border_center = math_utils.calculate_border_vertices_centroid(self.selected_faces, self.bm, context.edit_object.matrix_world)
+                viewport_drawing.start_proportional_circle_drawing(border_center, self.proportional_size)
                 viewport_drawing.start_pivot_cross_drawing(self.pivot_point)
                 self.adjust_proportional_falloff(context, self.proportional_size)
             elif not ts.use_proportional_edit and self.use_proportional:
@@ -695,8 +700,9 @@ class MESH_OT_super_orient_modal(bpy.types.Operator):
                 self.proportional_size = ts.proportional_size
                 self.proportional_falloff = ts.proportional_edit_falloff
                 self.use_connected_only = ts.use_proportional_connected
-                selection_centroid = math_utils.calculate_faces_centroid(self.selected_faces, obj.matrix_world)
-                viewport_drawing.start_proportional_circle_drawing(selection_centroid, self.proportional_size)
+                # Center the circle at the SELECTION BORDER centroid (unselected verts adjacent to selected)
+                border_center = math_utils.calculate_border_vertices_centroid(self.selected_faces, self.bm, obj.matrix_world)
+                viewport_drawing.start_proportional_circle_drawing(border_center, self.proportional_size)
                 viewport_drawing.start_pivot_cross_drawing(self.pivot_point)
                 # Rebuild proportional vertices and update pivot/circle/HUD consistently
                 self.adjust_proportional_falloff(context, self.proportional_size)
@@ -710,8 +716,14 @@ class MESH_OT_super_orient_modal(bpy.types.Operator):
 
             
         elif event.type == 'MOUSEMOVE':
-            # Update current mouse position
-            self.current_mouse_pos = Vector((event.mouse_region_x, event.mouse_region_y))
+            # Update current mouse position with precision handling
+            raw = (event.mouse_region_x, event.mouse_region_y)
+            adjusted = self.precision.on_move(
+                raw,
+                shift=event.shift,
+                current_adjusted_xy=(self.current_mouse_pos.x, self.current_mouse_pos.y),
+            )
+            self.current_mouse_pos = Vector(adjusted)
             
             # Apply the mouse transformation using the shared function
             self.apply_mouse_transformation(context)
