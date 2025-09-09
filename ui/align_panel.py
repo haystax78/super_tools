@@ -23,6 +23,19 @@ class SUPERTOOLS_PT_align_panel(Panel):
         col.separator()
         col.label(text="Align")
         col.operator("super_tools.align_to_active", text="Align To Active")
+        # ICP settings: pick target vertex group (on active object)
+        if context.active_object and hasattr(context.active_object, "vertex_groups"):
+            col.prop_search(
+                context.scene,
+                "superalign_icp_target_group",
+                context.active_object,
+                "vertex_groups",
+                text="ICP Target Group",
+            )
+        # ICP option: allow uniform scale during alignment
+        if hasattr(context.scene, "superalign_icp_allow_scale"):
+            col.prop(context.scene, "superalign_icp_allow_scale", text="Allow Scale")
+        col.operator("super_tools.icp_align_modal", text="ICP Align (ESC to stop)")
         col.separator()
         col.label(text="Utilities")
         col.operator("super_tools.mesh_flipbook", text="Sequential Vis (toggle)")

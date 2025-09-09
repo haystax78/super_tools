@@ -6,7 +6,7 @@ A Blender addon that provides advanced mesh editing tools for enhanced modeling 
 
 - **Super Extrude**: Modal extrude operator with automatic orientation and intuitive mouse controls
 - **Super Orient**: Proportional editing tool for reorienting face selections with topology-aware falloff
-- **Super Align**: Align mesh objects by matching three surface points (A, B, C); includes tools to plot/delete A/B/C locators, align to active target, and sequential visibility utility.
+- **Super Align**: Align mesh objects by matching three surface points (A, B, C); includes tools to plot/delete A/B/C locators, align to active target, iterative ICP alignment, and sequential visibility utility.
 - **Spatial Relationship Logic**: Maintains consistent orientation behavior across all tools
 - **Proportional Editing Integration**: Seamless integration with Blender's proportional editing settings
  - **Auto-Updater**: Optionally checks and installs updates from GitHub on startup
@@ -44,13 +44,12 @@ A Blender addon that provides advanced mesh editing tools for enhanced modeling 
 
 ## Changelog
 
+### v0.0.7
+- Added ICP Align modal operator (`super_tools.icp_align_modal`) that iteratively aligns selected meshes to the active target until ESC. Includes robust sampling, KD-tree nearest neighbors, outlier rejection, and rigid Kabsch transform per iteration. UI button added under Super Align panel.
+
 ### v0.0.6
-- Merge Super Align tools into Super Tools:
-  - Utilities: `utils/align_points.py`, `utils/align_raycast.py`, `utils/align_similarity.py`, `utils/align_locators.py` (with scene property for locator size and auto-rescale).
-  - Operators: `operators/align_plot_points.py`, `operators/align_delete_points.py`, `operators/align_to_active.py`, `operators/align_sequential_vis.py`.
-  - UI: `ui/align_panel.py` integrates into the Super Tools sidebar.
-  - All operator ids renamed to `super_tools.*` and imports updated.
-  - Version bumped to 0.0.6.
+- Added Super Align tools for aligning arbitrary mesh objects by matching three surface points (A, B, C). Extremely useful for aligning scans.
+- Version bumped to 0.0.6.
 
 ### v0.0.5
 - Precision Movement: Added reusable precision mouse handling (`utils/input_utils.PrecisionMouseState`). Holding Shift slows mouse-driven transforms without jumps in both Super Orient and Super Extrude modals. Default scale set to 0.3.
