@@ -167,12 +167,7 @@ class MESH_OT_super_extrude_modal(bpy.types.Operator):
         # Update mesh
         bmesh.update_edit_mesh(obj.data)
         
-        # Optional proportional circle visualization (HUD disabled)
-        ts = context.scene.tool_settings
-        self.use_proportional = ts.use_proportional_edit
-        if self.use_proportional:
-            viewport_drawing.start_proportional_circle_drawing(self.selection_center, ts.proportional_size)
-            viewport_drawing.start_pivot_cross_drawing(self.selection_center)
+        # Proportional editing and overlays are disabled for Super Extrude
 
         # Add modal handler
         context.window_manager.modal_handler_add(self)
@@ -194,42 +189,9 @@ class MESH_OT_super_extrude_modal(bpy.types.Operator):
         if self.axis_constraints.handle_constraint_event(event, "Super Extrude"):
             return {'RUNNING_MODAL'}
 
-        # Proportional controls and quick menu
-        ts = context.scene.tool_settings
-        if event.type == 'O' and event.shift:
-            bpy.ops.wm.call_menu(name="VIEW3D_MT_super_tools_proportional")
-            return {'RUNNING_MODAL'}
-        elif event.type == 'O' and event.value == 'PRESS':
-            self.use_proportional = not self.use_proportional
-            ts.use_proportional_edit = self.use_proportional
-            if self.use_proportional:
-                viewport_drawing.start_proportional_circle_drawing(self.selection_center, ts.proportional_size)
-                viewport_drawing.start_pivot_cross_drawing(self.selection_center)
-            else:
-                viewport_drawing.stop_proportional_circle_drawing()
-            return {'RUNNING_MODAL'}
-        elif event.type == 'LEFT_BRACKET' and event.value == 'PRESS' and self.use_proportional:
-            ts.proportional_size = max(0.01, ts.proportional_size * 0.9)
-            viewport_drawing.update_proportional_circle(self.selection_center, ts.proportional_size)
-            return {'RUNNING_MODAL'}
-        elif event.type == 'RIGHT_BRACKET' and event.value == 'PRESS' and self.use_proportional:
-            ts.proportional_size = ts.proportional_size * 1.1
-            viewport_drawing.update_proportional_circle(self.selection_center, ts.proportional_size)
-            return {'RUNNING_MODAL'}
-        elif event.type == 'WHEELUPMOUSE' and self.use_proportional:
-            ts.proportional_size = ts.proportional_size * 1.1
-            viewport_drawing.update_proportional_circle(self.selection_center, ts.proportional_size)
-            self.update_hud(context)
-            return {'RUNNING_MODAL'}
-        elif event.type == 'WHEELDOWNMOUSE' and self.use_proportional:
-            ts.proportional_size = max(0.01, ts.proportional_size * 0.9)
-            viewport_drawing.update_proportional_circle(self.selection_center, ts.proportional_size)
-            self.update_hud(context)
-            return {'RUNNING_MODAL'}
-        elif event.type in {"ONE","TWO","THREE","FOUR","FIVE","SIX","SEVEN"} and event.value == 'PRESS' and self.use_proportional:
-            falloffs = ['SMOOTH','SPHERE','ROOT','INVERSE_SQUARE','SHARP','LINEAR','CONSTANT']
-            idx_map = {'ONE':0,'TWO':1,'THREE':2,'FOUR':3,'FIVE':4,'SIX':5,'SEVEN':6}
-            ts.proportional_edit_falloff = falloffs[idx_map[event.type]]
+        # Proportional editing and quick menu are disabled for Super Extrude
+        # Ignore 'O' and related inputs to prevent toggling global proportional edit during the modal
+        if event.type in {'O', 'LEFT_BRACKET', 'RIGHT_BRACKET'}:
             return {'RUNNING_MODAL'}
         
         # Handle different events
@@ -289,9 +251,7 @@ class MESH_OT_super_extrude_modal(bpy.types.Operator):
         elif (event.type == 'LEFTMOUSE' and event.value == 'PRESS') or (event.type == 'RET' and event.value == 'PRESS'):
             # Confirm operation
             print("Super Extrude Modal: CONFIRMING operation")
-            # Stop overlays (HUD disabled)
-            if self.use_proportional:
-                viewport_drawing.stop_proportional_circle_drawing()
+            # Overlays disabled: nothing to stop
             # Recalculate face normals for the entire mesh
             bmesh.ops.recalc_face_normals(self.bm, faces=self.bm.faces)
             
@@ -307,9 +267,6 @@ class MESH_OT_super_extrude_modal(bpy.types.Operator):
         elif (event.type == 'RIGHTMOUSE' and event.value == 'PRESS') or (event.type == 'ESC' and event.value == 'PRESS'):
             # Cancel operation - use Blender's undo system to restore original state
             print("Super Extrude Modal: CANCELLING operation")
-            # Stop overlays (HUD disabled)
-            if self.use_proportional:
-                viewport_drawing.stop_proportional_circle_drawing()
             
             # Use Blender's undo system to restore the mesh to its state before the operation
             bpy.ops.ed.undo_push(message="Super Extrude Cancel")

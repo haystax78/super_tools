@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Super Tools",
     "author": "MattGPT",
-    "version": (0, 0, 7),
+    "version": (0, 0, 8),
     "blender": (4, 3, 0),
     "location": "View3D > Edit Mode > Face Context Menu",
     "description": "Advanced mesh editing tools including Super Extrude and Super Orient operators",
@@ -28,6 +28,7 @@ modules = [
     "utils.align_raycast",
     "utils.align_similarity",
     "utils.align_icp",
+    "utils.align_cpd",
     # Properties must be registered before UI draws
     "utils.align_props",
     "utils.align_locators",
@@ -36,6 +37,7 @@ modules = [
     "operators.align_to_active",
     "operators.align_sequential_vis",
     "operators.align_icp_modal",
+    "operators.align_cpd_modal",
     "ui.align_panel",
 ]
 

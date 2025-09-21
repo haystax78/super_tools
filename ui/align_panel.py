@@ -4,12 +4,74 @@ from bpy.types import Panel
 from ..utils.align_locators import SCENE_PROP_SIZE
 
 
+class SUPERTOOLS_PT_main_panel(Panel):
+    bl_label = "Super Tools"
+    bl_idname = "SUPERTOOLS_PT_main_panel"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'Super Tools'
+    # Ensure this appears above other panels in this category
+    bl_order = 0
+
+    def draw_header(self, context):
+        # Leave header content empty; version is appended to panel title
+        pass
+
+    def draw(self, context):
+        # Intentionally empty; child panels (e.g., Modeling, Super Align) appear under this
+        pass
+
+
+# Append version to the main panel title so it appears inline and left-aligned
+def _supertools_version_suffix():
+    try:
+        import importlib
+        pkg = importlib.import_module('super_tools')
+        bl = getattr(pkg, 'bl_info', None)
+        if isinstance(bl, dict):
+            ver = bl.get('version')
+            if isinstance(ver, (tuple, list)) and len(ver) >= 3:
+                return f" v{ver[0]}.{ver[1]}.{ver[2]}"
+    except Exception:
+        return ""
+    return ""
+
+
+_ver = _supertools_version_suffix()
+if _ver:
+    try:
+        SUPERTOOLS_PT_main_panel.bl_label = SUPERTOOLS_PT_main_panel.bl_label + _ver
+    except Exception:
+        pass
+
+
+class SUPERTOOLS_PT_modeling_panel(Panel):
+    bl_label = "Modeling"
+    bl_idname = "SUPERTOOLS_PT_modeling_panel"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'Super Tools'
+    bl_parent_id = 'SUPERTOOLS_PT_main_panel'
+    bl_options = {'DEFAULT_CLOSED'}
+    bl_order = 0
+
+    def draw(self, context):
+        layout = self.layout
+        col = layout.column(align=True)
+        col.operator("mesh.super_extrude_modal", text="Super Extrude")
+        col.operator("mesh.super_orient_modal", text="Super Orient")
+
+
 class SUPERTOOLS_PT_align_panel(Panel):
     bl_label = "Super Align"
     bl_idname = "SUPERTOOLS_PT_align_panel"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
     bl_category = 'Super Tools'
+    bl_parent_id = 'SUPERTOOLS_PT_main_panel'
+    # Default collapsed; and order after the main panel
+    bl_options = {'DEFAULT_CLOSED'}
+    bl_order = 1
 
     def draw(self, context):
         layout = self.layout
@@ -36,20 +98,20 @@ class SUPERTOOLS_PT_align_panel(Panel):
         if hasattr(context.scene, "superalign_icp_allow_scale"):
             col.prop(context.scene, "superalign_icp_allow_scale", text="Allow Scale")
         col.operator("super_tools.icp_align_modal", text="ICP Align (ESC to stop)")
+        col.operator("super_tools.cpd_align_modal", text="CPD Align (ESC to stop)")
         col.separator()
         col.label(text="Utilities")
         col.operator("super_tools.mesh_flipbook", text="Sequential Vis (toggle)")
-        col.label(text="Instructions:")
-        col.label(text="1) Make object active.")
-        col.label(text="2) Plot A, B, C on its surface.")
-        col.label(text="3) Repeat for others.")
-        col.label(text="4) Select all, active = target.")
-        col.label(text="5) Run Align To Active.")
+
 
 
 def register():
+    bpy.utils.register_class(SUPERTOOLS_PT_main_panel)
+    bpy.utils.register_class(SUPERTOOLS_PT_modeling_panel)
     bpy.utils.register_class(SUPERTOOLS_PT_align_panel)
 
 
 def unregister():
     bpy.utils.unregister_class(SUPERTOOLS_PT_align_panel)
+    bpy.utils.unregister_class(SUPERTOOLS_PT_modeling_panel)
+    bpy.utils.unregister_class(SUPERTOOLS_PT_main_panel)
