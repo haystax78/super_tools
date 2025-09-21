@@ -44,6 +44,17 @@ A Blender addon that provides advanced mesh editing tools for enhanced modeling 
 
 ## Changelog
 
+### v0.0.8
+- Super Tools UI
+  - Panel title now shows the version inline (e.g., "Super Tools v0.0.8"), left-aligned with no header gap.
+  - Reorganized UI into collapsible sub-panels under Super Tools:
+    - Modeling: Super Extrude, Super Orient
+    - Super Align: alignment tools; collapsed by default
+- Iterative Alignment
+  - Added CPD Align modal operator (`super_tools.cpd_align_modal`) implementing rigid/similarity Coherent Point Drift in pure NumPy.
+  - Removed proportional editing controls/overlays; operation focuses on spatial-relationship driven movement/orientation.
+- Version bumped to 0.0.8.
+
 ### v0.0.7
 - Added ICP Align modal operator (`super_tools.icp_align_modal`) that iteratively aligns selected meshes to the active target until ESC. Includes robust sampling, KD-tree nearest neighbors, outlier rejection, and rigid Kabsch transform per iteration. UI button added under Super Align panel.
 
