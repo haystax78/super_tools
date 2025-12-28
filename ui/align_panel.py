@@ -114,19 +114,35 @@ class SUPERTOOLS_PT_align_panel(Panel):
             col.prop(context.scene, "superalign_icp_allow_scale", text="Allow Scale")
         col.operator("super_tools.icp_align_modal", text="ICP Align (ESC to stop)")
         col.operator("super_tools.cpd_align_modal", text="CPD Align (ESC to stop)")
-        col.separator()
-        col.label(text="Utilities")
-        col.operator("super_tools.mesh_flipbook", text="Sequential Vis (toggle)")
 
+
+class SUPERTOOLS_PT_utilities_panel(Panel):
+    bl_label = "Utilities"
+    bl_idname = "SUPERTOOLS_PT_utilities_panel"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'Super Tools'
+    bl_parent_id = 'SUPERTOOLS_PT_main_panel'
+    bl_options = {'DEFAULT_CLOSED'}
+    bl_order = 2
+
+    def draw(self, context):
+        layout = self.layout
+        col = layout.column(align=True)
+        col.label(text="Sequential Visibility")
+        col.prop(context.scene, "supertools_seqvis_duration", text="Duration (frames)")
+        col.operator("super_tools.mesh_flipbook", text="Toggle Sequential Vis")
 
 
 def register():
     bpy.utils.register_class(SUPERTOOLS_PT_main_panel)
     bpy.utils.register_class(SUPERTOOLS_PT_modeling_panel)
     bpy.utils.register_class(SUPERTOOLS_PT_align_panel)
+    bpy.utils.register_class(SUPERTOOLS_PT_utilities_panel)
 
 
 def unregister():
+    bpy.utils.unregister_class(SUPERTOOLS_PT_utilities_panel)
     bpy.utils.unregister_class(SUPERTOOLS_PT_align_panel)
     bpy.utils.unregister_class(SUPERTOOLS_PT_modeling_panel)
     bpy.utils.unregister_class(SUPERTOOLS_PT_main_panel)

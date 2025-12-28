@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Super Tools",
     "author": "MattGPT",
-    "version": (1, 0, 0),
+    "version": (1, 0, 1),
     "blender": (4, 3, 0),
     "location": "View3D > Edit Mode > Face Context Menu",
     "description": "Advanced mesh editing tools including Super Extrude and Super Orient operators",
@@ -35,7 +35,7 @@ modules = [
     "operators.align_plot_points",
     "operators.align_delete_points",
     "operators.align_to_active",
-    "operators.align_sequential_vis",
+    "operators.utilities_sequential_vis",
     "operators.align_icp_modal",
     "operators.align_cpd_modal",
     "ui.align_panel",
