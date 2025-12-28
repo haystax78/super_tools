@@ -2,15 +2,28 @@
 
 A Blender addon that provides advanced mesh editing tools for enhanced modeling workflows.
 
+## What's New in v1.0.0
+
+- **Flex Tool**: A powerful curve-based mesh creation tool for sculpting organic shapes like muscles, stylized hair, limbs and more.
+  - Draw control points to define a B-spline curve with adjustable radii
+  - Multiple profile types: Circular, Square, Rounded Square, and up to 6 custom drawable profiles
+  - Custom profile drawing mode with transform controls (Scale, Rotate, Move)
+  - Profile persistence across Blender sessions
+  - Hemisphere and planar end caps
+  - Mirror mode, adaptive segmentation, and twist controls
+  - Edit existing flex meshes with Alt+Q switching
+  - Configurable hotkeys and default settings in addon preferences
+
 ## Features
 
+- **Flex Tool**: Curve-based mesh creation for organic shapes with customizable profiles, caps, and real-time preview
 - **Super Extrude**: Modal extrude operator with automatic orientation and intuitive mouse controls
 - **Super Orient**: Proportional editing tool for reorienting face selections with topology-aware falloff
 - **Super Align**: Align mesh objects by matching three surface points (A, B, C); includes tools to plot/delete A/B/C locators, align to active target, iterative ICP alignment, and sequential visibility utility.
 - **Spatial Relationship Logic**: Maintains consistent orientation behavior across all tools
 - **Proportional Editing Integration**: Seamless integration with Blender's proportional editing settings
- - **Auto-Updater**: Optionally checks and installs updates from GitHub on startup
- - **Performance-Optimized Falloff**: KDTree + NumPy powered proportional weights with connected-only support
+- **Auto-Updater**: Optionally checks and installs updates from GitHub on startup
+- **Performance-Optimized Falloff**: KDTree + NumPy powered proportional weights with connected-only support
 
 ## Installation
 
@@ -20,6 +33,18 @@ A Blender addon that provides advanced mesh editing tools for enhanced modeling 
 4. Enable the addon by checking the checkbox
 
 ## Usage
+
+### Flex Tool
+1. In Object Mode, click "Flex Create" in the Super Tools > Modeling panel (or press the assigned hotkey)
+2. **LMB** to add control points along a curve path
+3. **RMB drag** to adjust the radius uniformly across the whole curve, RMB + Mouse wheel to ramp the radius along the curve, RMB + MMB to equalize the radius of the whole curve.
+4. Use number keys to change profile type:
+   - `1` Circular, `2` Square, `3` Rounded Square
+   - `4-9` Custom profiles (Alt+key to draw/edit)
+5. Press `C` to toggle end caps, `B` for B-spline mode, `X` for mirror
+6. Hold `T` and RMB drag to add twist uniformly along the curve, LMB to add twist incrementally along the curve, Click MMB to reset twist
+7. Press **Enter** to accept, **Space** to accept and continue, **Esc** to cancel
+8. To edit an existing flex mesh, select it and click "Reflex Mesh" or hover and press **Alt+Q** if already in the Flex Tool modal.
 
 ### Super Extrude
 1. Select one or more faces in Edit Mode

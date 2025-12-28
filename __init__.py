@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Super Tools",
     "author": "MattGPT",
-    "version": (0, 0, 8),
+    "version": (1, 0, 0),
     "blender": (4, 3, 0),
     "location": "View3D > Edit Mode > Face Context Menu",
     "description": "Advanced mesh editing tools including Super Extrude and Super Orient operators",
@@ -39,6 +39,18 @@ modules = [
     "operators.align_icp_modal",
     "operators.align_cpd_modal",
     "ui.align_panel",
+
+    # Flex Tool - curve-based mesh creation
+    "utils.flex_state",
+    "utils.flex_conversion",
+    "utils.flex_math",
+    "utils.flex_mesh",
+    "operators.flex_drawing",
+    "operators.flex_interaction_base",
+    "operators.flex_interaction_points",
+    "operators.flex_operator_base",
+    "operators.flex_tool",
+    "ui.flex_panel",
 ]
 
 # Store imported modules for reload

@@ -45,6 +45,13 @@ if _ver:
         pass
 
 
+def is_flex_mesh(obj):
+    """Check if object is a flex mesh by looking for flex_curve_data property."""
+    if obj is None:
+        return False
+    return "flex_curve_data" in obj
+
+
 class SUPERTOOLS_PT_modeling_panel(Panel):
     bl_label = "Modeling"
     bl_idname = "SUPERTOOLS_PT_modeling_panel"
@@ -58,6 +65,14 @@ class SUPERTOOLS_PT_modeling_panel(Panel):
     def draw(self, context):
         layout = self.layout
         col = layout.column(align=True)
+        
+        # Flex button with dynamic label
+        active_obj = context.active_object
+        if active_obj and active_obj.select_get() and is_flex_mesh(active_obj):
+            col.operator("mesh.flex_create", text="ReFlex Mesh", icon="MESH_CAPSULE")
+        else:
+            col.operator("mesh.flex_create", text="Create Flex Mesh", icon="MESH_CAPSULE")
+        
         col.operator("mesh.super_extrude_modal", text="Super Extrude")
         col.operator("mesh.super_orient_modal", text="Super Orient")
 

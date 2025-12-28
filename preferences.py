@@ -201,6 +201,21 @@ class SUPERTOOLS_OT_perform_update(bpy.types.Operator):
             return {'CANCELLED'}
 
 
+class SUPERTOOLS_OT_restore_flex_hotkey_defaults(bpy.types.Operator):
+    bl_idname = "super_tools.restore_flex_hotkey_defaults"
+    bl_label = "Restore Defaults"
+    bl_description = "Restore flex hotkey to default (Alt+Q)"
+
+    def execute(self, context):
+        prefs = context.preferences.addons.get(__package__).preferences
+        prefs.flex_key_switch_mesh = "Q"
+        prefs.flex_key_switch_mesh_alt = True
+        prefs.flex_key_switch_mesh_ctrl = False
+        prefs.flex_key_switch_mesh_shift = False
+        self.report({'INFO'}, "Flex hotkey restored to Alt+Q")
+        return {'FINISHED'}
+
+
 class SuperToolsPreferences(bpy.types.AddonPreferences):
     bl_idname = __package__
 
@@ -216,10 +231,102 @@ class SuperToolsPreferences(bpy.types.AddonPreferences):
     )
     update_available: bpy.props.BoolProperty(default=False)
     update_status: bpy.props.StringProperty(name="Status", default="")
+    
+    # Flex Tool Settings
+    flex_default_resolution: bpy.props.IntProperty(
+        name="Default Resolution",
+        description="Default circumference resolution for new flex meshes",
+        default=16,
+        min=4,
+        max=64
+    )
+    flex_default_segments: bpy.props.IntProperty(
+        name="Default Segments",
+        description="Default length segments for new flex meshes",
+        default=32,
+        min=8,
+        max=128
+    )
+    flex_default_radius: bpy.props.FloatProperty(
+        name="Default Radius",
+        description="Default radius for new control points",
+        default=0.5,
+        min=0.01,
+        max=10.0
+    )
+    flex_min_radius: bpy.props.FloatProperty(
+        name="Minimum Radius",
+        description="Minimum allowed radius for control points",
+        default=0.05,
+        min=0.0,
+        max=5.0,
+        precision=4
+    )
+    flex_max_radius: bpy.props.FloatProperty(
+        name="Maximum Radius",
+        description="Maximum allowed radius for control points",
+        default=10.0,
+        min=0.1,
+        max=100.0
+    )
+    flex_default_bspline_mode: bpy.props.BoolProperty(
+        name="B-spline Mode (Default)",
+        description="Use B-spline curve mode by default when creating/editing",
+        default=True
+    )
+    flex_default_cap_type: bpy.props.EnumProperty(
+        name="Default Cap Type",
+        description="Default cap type for new flex meshes",
+        items=[
+            ('NONE', "None", "No caps"),
+            ('HEMISPHERE', "Hemisphere", "Rounded hemisphere caps"),
+            ('PLANAR', "Planar", "Flat planar caps"),
+        ],
+        default='HEMISPHERE'
+    )
+    flex_add_smooth_by_angle: bpy.props.BoolProperty(
+        name="Add Smooth by Angle",
+        description="Add Smooth by Angle modifier to new flex meshes",
+        default=False
+    )
+    flex_smooth_by_angle_value: bpy.props.FloatProperty(
+        name="Smooth Angle",
+        description="Angle threshold for Smooth by Angle modifier",
+        default=0.523599,  # 30 degrees in radians
+        min=0.0,
+        max=3.14159,  # 180 degrees in radians
+        subtype='ANGLE'
+    )
+    
+    # Flex Hotkeys - Switch Mesh with full modifier support
+    flex_key_switch_mesh: bpy.props.StringProperty(
+        name="Key", 
+        default="Q", 
+        description="Key for switch to hovered flex mesh"
+    )
+    flex_key_switch_mesh_alt: bpy.props.BoolProperty(
+        name="Alt",
+        default=True,
+        description="Require Alt modifier"
+    )
+    flex_key_switch_mesh_ctrl: bpy.props.BoolProperty(
+        name="Ctrl",
+        default=False,
+        description="Require Ctrl modifier"
+    )
+    flex_key_switch_mesh_shift: bpy.props.BoolProperty(
+        name="Shift",
+        default=False,
+        description="Require Shift modifier"
+    )
 
     def draw(self, context):
         layout = self.layout
-        col = layout.column()
+        
+        # Update section
+        box = layout.box()
+        box.label(text="Updates", icon='FILE_REFRESH')
+        col = box.column()
         col.prop(self, "auto_check")
         col.prop(self, "auto_update")
         row = col.row()
@@ -229,11 +336,49 @@ class SuperToolsPreferences(bpy.types.AddonPreferences):
         row2.operator("super_tools.perform_update", icon='IMPORT')
         if self.update_status:
             col.label(text=self.update_status)
+        
+        # Flex Tool Settings
+        box = layout.box()
+        box.label(text="Flex Tool Settings", icon='CURVE_DATA')
+        
+        col = box.column(align=True)
+        col.label(text="Default Resolution:")
+        col.prop(self, "flex_default_resolution", text="Circumference")
+        col.prop(self, "flex_default_segments", text="Length")
+        
+        col.separator()
+        col.label(text="Radius Limits:")
+        col.prop(self, "flex_default_radius", text="Default Radius")
+        col.prop(self, "flex_min_radius", text="Min Radius")
+        col.prop(self, "flex_max_radius", text="Max Radius")
+        
+        col.separator()
+        col.label(text="Behavior:")
+        col.prop(self, "flex_default_bspline_mode")
+        col.prop(self, "flex_default_cap_type")
+        col.prop(self, "flex_add_smooth_by_angle")
+        row = col.row()
+        row.enabled = self.flex_add_smooth_by_angle
+        row.prop(self, "flex_smooth_by_angle_value")
+        
+        # Flex Hotkeys
+        box = layout.box()
+        box.label(text="Flex Tool Hotkeys", icon='KEYINGSET')
+        col = box.column(align=True)
+        col.label(text="Switch to Hovered Flex Mesh:")
+        row = col.row(align=True)
+        row.prop(self, "flex_key_switch_mesh_ctrl", toggle=True)
+        row.prop(self, "flex_key_switch_mesh_alt", toggle=True)
+        row.prop(self, "flex_key_switch_mesh_shift", toggle=True)
+        row.prop(self, "flex_key_switch_mesh", text="")
+        col.separator()
+        col.operator("super_tools.restore_flex_hotkey_defaults", icon='LOOP_BACK')
 
 
 classes = (
     SUPERTOOLS_OT_check_update,
     SUPERTOOLS_OT_perform_update,
+    SUPERTOOLS_OT_restore_flex_hotkey_defaults,
     SuperToolsPreferences,
 )
 
