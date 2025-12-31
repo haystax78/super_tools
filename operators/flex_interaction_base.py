@@ -1248,6 +1248,10 @@ def _handle_custom_profile_mode(operator, context, event):
     if event.type == 'R':
         return {'RUNNING_MODAL'}
     
+    # Block SPACE key to prevent 'accept and continue' during profile edit
+    if event.type in {'SPACE', 'SPACEBAR'}:
+        return {'RUNNING_MODAL'}
+    
     # Handle profile moving (G key held)
     if event.type == 'G':
         if event.value == 'PRESS' and not state.custom_profile_moving:
