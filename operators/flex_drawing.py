@@ -113,8 +113,16 @@ class CursorHUD:
             })
             slots.append({
                 'id': 'profile_transform',
-                'text': 'S - Scale, R - Rotate, G - Move',
+                'text': 'S - Scale, G - Move',
                 'color': (0.6, 0.9, 1.0),
+            })
+            symmetry_on = getattr(state, 'custom_profile_symmetry', False)
+            sym_status = "ON" if symmetry_on else "OFF"
+            sym_color = (1.0, 0.5, 0.5) if symmetry_on else (0.6, 0.9, 1.0)
+            slots.append({
+                'id': 'profile_symmetry',
+                'text': f'X - Symmetry [{sym_status}]',
+                'color': sym_color,
             })
             slots.append({
                 'id': 'profile_clear',
@@ -305,9 +313,10 @@ class CursorHUD:
         
         if getattr(state, 'custom_profile_draw_mode', False):
             point_count = len(state._custom_profile_data.get('screen_points', []))
+            sym_status = "ON" if getattr(state, 'custom_profile_symmetry', False) else "OFF"
             slots.append({
                 'id': 'custom_profile_draw',
-                'text': f"Drawing Profile: {point_count} pts | LMB:add RMB:del Bksp:clear | S:scale R:rot G:move | Enter:accept ESC:cancel",
+                'text': f"Drawing Profile: {point_count} pts | LMB:add RMB:del Bksp:clear | S:scale R:rot G:move X:symmetry({sym_status}) | Enter:accept ESC:cancel",
                 'color': (1.0, 0.8, 0.2)
             })
 
@@ -423,27 +432,100 @@ def draw_callback_px(operator, context):
         screen_points = state._custom_profile_data['screen_points']
         num_points = len(screen_points) if screen_points else 0
         
-        if num_points > 0:
-            shader_fill = gpu.shader.from_builtin('UNIFORM_COLOR')
-            shader_line = gpu.shader.from_builtin('POLYLINE_SMOOTH_COLOR')
+        shader_fill = gpu.shader.from_builtin('UNIFORM_COLOR')
+        shader_line = gpu.shader.from_builtin('POLYLINE_SMOOTH_COLOR')
+        
+        # Draw symmetry line if enabled
+        if getattr(state, 'custom_profile_symmetry', False):
+            region = bpy.context.region
+            # Use the fixed symmetry center
+            sym_center = getattr(state, 'custom_profile_symmetry_center', None)
+            if sym_center:
+                center_x, center_y = sym_center
+            else:
+                center_x = region.width / 2
+                center_y = region.height / 2
             
-            if num_points >= 2:
+            # Draw symmetry line through center at the tracked angle
+            angle = getattr(state, 'custom_profile_symmetry_angle', 0.0)
+            line_length = max(region.width, region.height)
+            # Line direction perpendicular to mirror axis (along the axis)
+            dx = math.sin(angle) * line_length
+            dy = math.cos(angle) * line_length
+            
+            sym_line_verts = [
+                (float(center_x - dx), float(center_y - dy), 0.0),
+                (float(center_x + dx), float(center_y + dy), 0.0)
+            ]
+            sym_line_colors = [(1.0, 0.2, 0.2, 0.8), (1.0, 0.2, 0.2, 0.8)]
+            
+            batch_sym = batch_for_shader(shader_line, 'LINE_STRIP',
+                {"pos": sym_line_verts, "color": sym_line_colors})
+            gpu.state.blend_set('ALPHA')
+            shader_line.bind()
+            shader_line.uniform_float("lineWidth", 2.0)
+            shader_line.uniform_float("viewportSize", (region.width, region.height))
+            batch_sym.draw(shader_line)
+        
+        if num_points > 0:
+            # In symmetry mode, generate full profile for line drawing
+            symmetry_enabled = getattr(state, 'custom_profile_symmetry', False)
+            if symmetry_enabled and num_points >= 1:
+                # Use the fixed symmetry center
+                sym_center = getattr(state, 'custom_profile_symmetry_center', None)
+                if sym_center:
+                    center = sym_center
+                else:
+                    center_x = sum(pt[0] for pt in screen_points) / num_points
+                    center_y = sum(pt[1] for pt in screen_points) / num_points
+                    center = (center_x, center_y)
+                angle = getattr(state, 'custom_profile_symmetry_angle', 0.0)
+                
+                # Generate mirrored points for drawing
+                mirrored_points = []
+                for pt in reversed(screen_points):
+                    cx, cy = center
+                    px, py = pt[0] - cx, pt[1] - cy
+                    cos_a = math.cos(-angle)
+                    sin_a = math.sin(-angle)
+                    rx = px * cos_a - py * sin_a
+                    ry = px * sin_a + py * cos_a
+                    rx = -rx
+                    cos_a = math.cos(angle)
+                    sin_a = math.sin(angle)
+                    mx = rx * cos_a - ry * sin_a
+                    my = rx * sin_a + ry * cos_a
+                    mirrored_points.append((mx + cx, my + cy))
+                
+                draw_points = mirrored_points + list(screen_points)
+            else:
+                draw_points = screen_points
+            
+            draw_num_points = len(draw_points)
+            
+            if draw_num_points >= 2:
                 hover_edge = getattr(state, 'custom_profile_hover_edge', -1)
                 hover_edge_pt = getattr(state, 'custom_profile_hover_edge_point', None)
                 
                 line_color = (0.2, 0.8, 1.0, 0.8)
+                mirror_line_color = (0.5, 0.5, 0.8, 0.6)  # Dimmer for mirrored side
                 highlight_color = (1.0, 0.5, 0.0, 1.0)
                 
                 line_verts = []
                 line_colors = []
-                for i, pt in enumerate(screen_points):
+                for i, pt in enumerate(draw_points):
                     line_verts.append((float(pt[0]), float(pt[1]), 0.0))
-                    if i == hover_edge:
+                    # Use dimmer color for mirrored points (first half in symmetry mode)
+                    if symmetry_enabled and i < len(mirrored_points):
+                        line_colors.append(mirror_line_color)
+                    elif i == hover_edge:
                         line_colors.append(highlight_color)
                     else:
                         line_colors.append(line_color)
-                line_verts.append((float(screen_points[0][0]), float(screen_points[0][1]), 0.0))
-                if hover_edge == num_points - 1:
+                line_verts.append((float(draw_points[0][0]), float(draw_points[0][1]), 0.0))
+                if symmetry_enabled:
+                    line_colors.append(mirror_line_color)
+                elif hover_edge == draw_num_points - 1:
                     line_colors.append(highlight_color)
                 else:
                     line_colors.append(line_color)
@@ -466,17 +548,39 @@ def draw_callback_px(operator, context):
             hover_idx = getattr(state, 'custom_profile_hover_index', -1)
             active_idx = getattr(state, 'custom_profile_active_index', -1)
             
+            # Check for center points (on axis) in symmetry mode
+            def is_center_point(pt):
+                if not symmetry_enabled:
+                    return False
+                sym_center = getattr(state, 'custom_profile_symmetry_center', None)
+                if sym_center is None:
+                    return False
+                sym_angle = getattr(state, 'custom_profile_symmetry_angle', 0.0)
+                # Check distance to axis
+                cx, cy = sym_center
+                px, py = pt[0] - cx, pt[1] - cy
+                cos_a = math.cos(-sym_angle)
+                sin_a = math.sin(-sym_angle)
+                rx = px * cos_a - py * sin_a
+                return abs(rx) < 5.0
+            
+            # Only draw editable points (right-side in symmetry mode)
             for i, pt in enumerate(screen_points):
                 px, py = float(pt[0]), float(pt[1])
                 
                 is_active = (i == active_idx)
                 is_hover = (i == hover_idx)
+                is_on_axis = is_center_point(pt)
                 
                 if is_active:
                     fill_color = (1.0, 0.5, 0.0, 1.0)
                     radius = 8.0
                 elif is_hover:
                     fill_color = (1.0, 0.7, 0.3, 1.0)
+                    radius = 7.0
+                elif is_on_axis:
+                    # Center points (on axis) - draw in red to indicate locked
+                    fill_color = (1.0, 0.3, 0.3, 1.0)
                     radius = 7.0
                 else:
                     fill_color = (1.0, 0.8, 0.2, 1.0)

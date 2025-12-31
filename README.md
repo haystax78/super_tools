@@ -2,6 +2,17 @@
 
 A Blender addon that provides advanced mesh editing tools for enhanced modeling workflows.
 
+## What's New in v1.1.0
+
+- **Flex Tool Profile Symmetry Mode**: Draw symmetric custom profiles with the X key
+  - Symmetry state saved per profile slot and restored when editing
+  - Disabling symmetry realizes mirrored points as real editable points
+- **Profile Drawing Improvements**:
+  - Rotation disabled during profile drawing to prevent symmetry conflicts
+- **Bug fixes**:
+  - Prevent re-invoking flex_create while modal is already running
+  - Fixed points being unselectable if too close to the active point's radius boundary.
+
 ## What's New in v1.0.0
 
 - **Flex Tool**: A powerful curve-based mesh creation tool for sculpting organic shapes like muscles, stylized hair, limbs and more.
@@ -69,12 +80,26 @@ A Blender addon that provides advanced mesh editing tools for enhanced modeling 
 
 ## Changelog
 
+### v1.1.0
+- Flex Tool Profile Symmetry Mode improvements:
+  - Symmetry line now locks in place when enabled, preventing shifts as points are added/moved
+  - Points on the symmetry axis are automatically detected and constrained to slide along it only
+  - Center crossing points generated automatically when enabling symmetry on existing profiles
+  - Symmetry state saved per profile slot and restored when editing
+  - Disabling symmetry realizes mirrored points as real editable points
+  - Visual distinction: center points (on axis) drawn in red
+- Profile drawing improvements:
+  - Rotation disabled during profile drawing to prevent symmetry conflicts
+  - Prevents re-invoking flex_create while modal is already running
+
+### v1.0.0
+- Initial release of Flex Tool for curve-based mesh creation
+
 ### v0.0.8
 - Super Tools UI
   - Panel title now shows the version inline (e.g., "Super Tools v0.0.8"), left-aligned with no header gap.
   - Reorganized UI into collapsible sub-panels under Super Tools:
     - Modeling: Super Extrude, Super Orient
-    - Super Align: alignment tools; collapsed by default
 - Iterative Alignment
   - Added CPD Align modal operator (`super_tools.cpd_align_modal`) implementing rigid/similarity Coherent Point Drift in pure NumPy.
   - Removed proportional editing controls/overlays; operation focuses on spatial-relationship driven movement/orientation.

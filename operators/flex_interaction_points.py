@@ -722,13 +722,9 @@ def _update_hover_states(context, mouse_pos):
                 )
                 state.hover_tension_index = active_idx if tt == 0 else -1
     
-    # Update reveal control
+    # Update reveal control - when a point is hovered, always reveal its controls
     if state.hover_point_index != -1:
-        if active_idx == -1:
-            state.reveal_control_index = state.hover_point_index
-        elif not inside_active_envelope:
-            if state.hover_point_index != active_idx:
-                state.reveal_control_index = state.hover_point_index
+        state.reveal_control_index = state.hover_point_index
     else:
         if not inside_active_envelope:
             state.reveal_control_index = -1

@@ -37,6 +37,11 @@ class MESH_OT_flex_create(FlexOperatorBase):
         """Initialize the operator when it's invoked"""
         if context.area.type != 'VIEW_3D':
             return {'CANCELLED'}
+        
+        # Prevent re-invocation while already running
+        if state.is_running:
+            self.report({'WARNING'}, "Flex tool is already active")
+            return {'CANCELLED'}
             
         self.original_mode = context.mode
 
@@ -160,6 +165,15 @@ class MESH_OT_flex_create(FlexOperatorBase):
                 'matrix_world': child.matrix_world.copy(),
                 'matrix_parent_inverse': child.matrix_parent_inverse.copy(),
             })
+        
+        # Unparent children using CLEAR_KEEP_TRANSFORM
+        for child_data in self._original_children:
+            child = bpy.data.objects.get(child_data['name'])
+            if child:
+                bpy.ops.object.select_all(action='DESELECT')
+                child.select_set(True)
+                context.view_layer.objects.active = child
+                bpy.ops.object.parent_clear(type='CLEAR_KEEP_TRANSFORM')
 
         curve_data_json = None
         for key in ("flex_curve_data", "sculpt_kit_curve_data", "sculpt_buddy_curve_data"):
@@ -340,6 +354,17 @@ class MESH_OT_flex_create(FlexOperatorBase):
                 orig_obj.hide_set(False)
                 orig_obj.select_set(True)
                 context.view_layer.objects.active = orig_obj
+                
+                # Reparent children back to the original object on cancel
+                original_children = getattr(self, '_original_children', [])
+                for child_data in original_children:
+                    child = bpy.data.objects.get(child_data['name'])
+                    if child:
+                        bpy.ops.object.select_all(action='DESELECT')
+                        child.select_set(True)
+                        orig_obj.select_set(True)
+                        context.view_layer.objects.active = orig_obj
+                        bpy.ops.object.parent_set(type='OBJECT', keep_transform=False)
             elif not getattr(self, '_edit_cancelled', False) and not getattr(self, '_edit_completed', False):
                 # Delete the original object after successful finalization
                 try:
@@ -622,6 +647,17 @@ class MESH_OT_flex_create(FlexOperatorBase):
                 "metadata_origin": {"x": metadata_origin.x, "y": metadata_origin.y, "z": metadata_origin.z}
             }
             final_obj["flex_curve_data"] = json.dumps(curve_data)
+            
+            # Reparent original children to the new final object
+            original_children = getattr(self, '_original_children', [])
+            for child_data in original_children:
+                child = bpy.data.objects.get(child_data['name'])
+                if child:
+                    bpy.ops.object.select_all(action='DESELECT')
+                    child.select_set(True)
+                    final_obj.select_set(True)
+                    context.view_layer.objects.active = final_obj
+                    bpy.ops.object.parent_set(type='OBJECT', keep_transform=False)
         
         if do_cleanup:
             self._cleanup(context)

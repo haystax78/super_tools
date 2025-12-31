@@ -165,6 +165,7 @@ class FlexState:
         
         # Custom profile settings - 6 slots (keys 4-9)
         self.custom_profile_slots = [[] for _ in range(6)]  # 6 profile slots
+        self.custom_profile_slot_symmetry = [False for _ in range(6)]  # Symmetry state per slot
         self.custom_profile_slot_names = ["Custom 1", "Custom 2", "Custom 3", "Custom 4", "Custom 5", "Custom 6"]
         self.active_custom_profile_slot = 0  # 0-4 for slots 1-5
         self.custom_profile_curve_name = None
@@ -182,6 +183,10 @@ class FlexState:
         self.custom_profile_rotating = False
         self.custom_profile_moving = False
         self.custom_profile_transform_start_pos = None
+        self.custom_profile_symmetry = False
+        self.custom_profile_symmetry_angle = 0.0  # Angle of symmetry axis in radians
+        self.custom_profile_symmetry_center = None  # Fixed center point when symmetry enabled
+        self.custom_profile_point_pairs = {}  # Maps point index to its mirror index
         
         # Profile settings
         self.profile_aspect_ratio = 1.0
@@ -290,6 +295,10 @@ class FlexState:
                 print("Flex: Failed to remove drawing handler")
             self.draw_handle = None
         
+        self.cleanup_preview_mesh()
+    
+    def cleanup_preview_mesh(self):
+        """Remove the preview mesh object and its data."""
         if self.preview_mesh_obj is not None:
             try:
                 if self.preview_mesh_obj.name in bpy.data.objects:
@@ -449,12 +458,18 @@ def save_custom_profiles_to_scene():
     import json
     for i, profile in enumerate(state.custom_profile_slots):
         prop_name = f"flex_custom_profile_{i}"
+        sym_prop_name = f"flex_custom_profile_{i}_symmetry"
         if profile and len(profile) >= 3:
             # Convert tuples to lists for JSON serialization
             profile_data = [list(pt) for pt in profile]
             scene[prop_name] = json.dumps(profile_data)
-        elif prop_name in scene:
-            del scene[prop_name]
+            # Save symmetry state
+            scene[sym_prop_name] = state.custom_profile_slot_symmetry[i]
+        else:
+            if prop_name in scene:
+                del scene[prop_name]
+            if sym_prop_name in scene:
+                del scene[sym_prop_name]
 
 
 def load_custom_profiles_from_scene():
@@ -466,6 +481,7 @@ def load_custom_profiles_from_scene():
     import json
     for i in range(6):
         prop_name = f"flex_custom_profile_{i}"
+        sym_prop_name = f"flex_custom_profile_{i}_symmetry"
         if prop_name in scene:
             try:
                 profile_data = json.loads(scene[prop_name])
@@ -475,6 +491,12 @@ def load_custom_profiles_from_scene():
                 state.custom_profile_slots[i] = []
         else:
             state.custom_profile_slots[i] = []
+        
+        # Load symmetry state
+        if sym_prop_name in scene:
+            state.custom_profile_slot_symmetry[i] = bool(scene[sym_prop_name])
+        else:
+            state.custom_profile_slot_symmetry[i] = False
 
 
 def register():

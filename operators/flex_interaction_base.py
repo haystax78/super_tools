@@ -94,6 +94,287 @@ def _find_closest_custom_profile_edge(mouse_pos, screen_points, threshold=10.0):
     return closest_edge, closest_point
 
 
+def _get_profile_center(screen_points):
+    """Get the center of the profile points."""
+    if screen_points and len(screen_points) >= 1:
+        cx = sum(pt[0] for pt in screen_points) / len(screen_points)
+        cy = sum(pt[1] for pt in screen_points) / len(screen_points)
+        return (cx, cy)
+    return None
+
+
+def _mirror_point(point, center, angle):
+    """Mirror a point across a line through center at given angle."""
+    cx, cy = center
+    # Translate to origin
+    px, py = point[0] - cx, point[1] - cy
+    # Rotate to align symmetry axis with Y-axis
+    cos_a = math.cos(-angle)
+    sin_a = math.sin(-angle)
+    rx = px * cos_a - py * sin_a
+    ry = px * sin_a + py * cos_a
+    # Mirror across Y-axis (negate X)
+    rx = -rx
+    # Rotate back
+    cos_a = math.cos(angle)
+    sin_a = math.sin(angle)
+    mx = rx * cos_a - ry * sin_a
+    my = rx * sin_a + ry * cos_a
+    # Translate back
+    return (mx + cx, my + cy)
+
+
+def _get_mirror_index(point_index):
+    """Get the mirror index for a point from the pairs dict."""
+    return state.custom_profile_point_pairs.get(point_index, -1)
+
+
+def _set_point_pair(idx1, idx2):
+    """Set two points as mirrors of each other."""
+    state.custom_profile_point_pairs[idx1] = idx2
+    state.custom_profile_point_pairs[idx2] = idx1
+
+
+def _remove_point_from_pairs(idx):
+    """Remove a point from the pairs dict and update indices."""
+    # Find and remove the pair
+    mirror_idx = state.custom_profile_point_pairs.pop(idx, -1)
+    if mirror_idx >= 0 and mirror_idx in state.custom_profile_point_pairs:
+        del state.custom_profile_point_pairs[mirror_idx]
+    
+    # Update indices for points after the removed one
+    new_pairs = {}
+    for k, v in state.custom_profile_point_pairs.items():
+        new_k = k - 1 if k > idx else k
+        new_v = v - 1 if v > idx else v
+        new_pairs[new_k] = new_v
+    state.custom_profile_point_pairs = new_pairs
+
+
+def _insert_point_update_pairs(insert_idx):
+    """Update pair indices after inserting a point."""
+    new_pairs = {}
+    for k, v in state.custom_profile_point_pairs.items():
+        new_k = k + 1 if k >= insert_idx else k
+        new_v = v + 1 if v >= insert_idx else v
+        new_pairs[new_k] = new_v
+    state.custom_profile_point_pairs = new_pairs
+
+
+def _distance_to_symmetry_axis(point, center, angle):
+    """Calculate perpendicular distance from point to symmetry axis."""
+    cx, cy = center
+    px, py = point[0] - cx, point[1] - cy
+    # Rotate to align axis with Y
+    cos_a = math.cos(-angle)
+    sin_a = math.sin(-angle)
+    rx = px * cos_a - py * sin_a
+    return abs(rx)
+
+
+def _is_point_on_right_side(point, center, angle):
+    """Check if point is on the right side of the symmetry axis."""
+    if center is None:
+        return True
+    cx, cy = center
+    px, py = point[0] - cx, point[1] - cy
+    # Rotate to align axis with Y
+    cos_a = math.cos(-angle)
+    sin_a = math.sin(-angle)
+    rx = px * cos_a - py * sin_a
+    return rx >= 0  # Right side is positive X after rotation
+
+
+def _get_signed_distance_to_axis(point, center, angle):
+    """Get signed distance from point to symmetry axis (positive = right side)."""
+    if center is None:
+        return 0
+    cx, cy = center
+    px, py = point[0] - cx, point[1] - cy
+    cos_a = math.cos(-angle)
+    sin_a = math.sin(-angle)
+    rx = px * cos_a - py * sin_a
+    return rx
+
+
+def _project_point_to_axis(point, center, angle):
+    """Project a point onto the symmetry axis."""
+    if center is None:
+        return point
+    cx, cy = center
+    px, py = point[0] - cx, point[1] - cy
+    # Rotate to align axis with Y
+    cos_a = math.cos(-angle)
+    sin_a = math.sin(-angle)
+    # rx = px * cos_a - py * sin_a  # Distance from axis (set to 0)
+    ry = px * sin_a + py * cos_a  # Position along axis (keep this)
+    # Rotate back with rx = 0
+    cos_a = math.cos(angle)
+    sin_a = math.sin(angle)
+    new_x = -ry * sin_a  # rx=0, so just -ry*sin_a
+    new_y = ry * cos_a   # rx=0, so just ry*cos_a
+    return (new_x + cx, new_y + cy)
+
+
+def _is_point_on_axis(point, center, angle, threshold=5.0):
+    """Check if a point is on (or very close to) the symmetry axis."""
+    dist = abs(_get_signed_distance_to_axis(point, center, angle))
+    return dist < threshold
+
+
+def _line_crosses_axis(p1, p2, center, angle):
+    """Check if line segment from p1 to p2 crosses the symmetry axis."""
+    d1 = _get_signed_distance_to_axis(p1, center, angle)
+    d2 = _get_signed_distance_to_axis(p2, center, angle)
+    # Crosses if signs are different (one positive, one negative)
+    return d1 * d2 < 0
+
+
+def _get_axis_crossing_point(p1, p2, center, angle):
+    """Get the point where line segment p1-p2 crosses the symmetry axis."""
+    d1 = _get_signed_distance_to_axis(p1, center, angle)
+    d2 = _get_signed_distance_to_axis(p2, center, angle)
+    
+    if abs(d1 - d2) < 0.001:
+        return None  # Parallel to axis or same point
+    
+    # Linear interpolation to find crossing point
+    t = d1 / (d1 - d2)
+    crossing_x = p1[0] + t * (p2[0] - p1[0])
+    crossing_y = p1[1] + t * (p2[1] - p1[1])
+    
+    # Snap to axis to ensure it's exactly on it
+    return _project_point_to_axis((crossing_x, crossing_y), center, angle)
+
+
+def _extract_right_side_with_crossings(screen_points, center, angle):
+    """Extract right-side points from a profile and add crossing points on the axis.
+    
+    This is used when enabling symmetry on an existing profile.
+    It finds all points on the right side, and where the profile crosses
+    the symmetry axis, it generates a point on the axis.
+    """
+    if len(screen_points) < 2:
+        return list(screen_points)
+    
+    result = []
+    n = len(screen_points)
+    
+    for i in range(n):
+        curr_pt = screen_points[i]
+        next_pt = screen_points[(i + 1) % n]
+        
+        curr_on_right = _is_point_on_right_side(curr_pt, center, angle)
+        next_on_right = _is_point_on_right_side(next_pt, center, angle)
+        curr_on_axis = _is_point_on_axis(curr_pt, center, angle)
+        
+        # Add current point if it's on right side or on axis
+        if curr_on_right or curr_on_axis:
+            # If on axis, snap it to exact axis position
+            if curr_on_axis:
+                result.append(_project_point_to_axis(curr_pt, center, angle))
+            else:
+                result.append(curr_pt)
+        
+        # Check if edge crosses the axis (going from right to left or left to right)
+        if _line_crosses_axis(curr_pt, next_pt, center, angle):
+            crossing = _get_axis_crossing_point(curr_pt, next_pt, center, angle)
+            if crossing:
+                # Only add crossing if it's not too close to an existing point
+                should_add = True
+                if result:
+                    last_pt = result[-1]
+                    dist = math.sqrt((crossing[0] - last_pt[0])**2 + (crossing[1] - last_pt[1])**2)
+                    if dist < 10:
+                        should_add = False
+                if should_add:
+                    result.append(crossing)
+    
+    # Remove duplicate consecutive points
+    if len(result) > 1:
+        cleaned = [result[0]]
+        for pt in result[1:]:
+            last = cleaned[-1]
+            dist = math.sqrt((pt[0] - last[0])**2 + (pt[1] - last[1])**2)
+            if dist >= 5:
+                cleaned.append(pt)
+        result = cleaned
+    
+    return result
+
+
+def _generate_symmetric_profile(right_side_points, center, angle):
+    """Generate full symmetric profile from right-side points only.
+    
+    Points on the axis (center points) are not mirrored.
+    The profile connects: mirror_last -> ... -> mirror_first -> first -> ... -> last
+    With center points at the crossings if first/last are not on the axis.
+    """
+    if len(right_side_points) < 1:
+        return []
+    
+    if len(right_side_points) == 1:
+        pt = right_side_points[0]
+        if _is_point_on_axis(pt, center, angle):
+            return [pt]  # Single center point, no mirror
+        mirror = _mirror_point(pt, center, angle)
+        return [pt, mirror]
+    
+    # Separate center points (on axis) from right-side points
+    center_point_indices = set()
+    for i, pt in enumerate(right_side_points):
+        if _is_point_on_axis(pt, center, angle):
+            center_point_indices.add(i)
+    
+    # Build the full profile
+    # Structure: [mirrored points in reverse] + [original points]
+    # But center points (on axis) should not be mirrored
+    
+    result = []
+    
+    # First, add mirrored points in reverse order (skip center points)
+    for i in range(len(right_side_points) - 1, -1, -1):
+        if i not in center_point_indices:
+            result.append(_mirror_point(right_side_points[i], center, angle))
+    
+    # Then add original points in forward order
+    for i, pt in enumerate(right_side_points):
+        result.append(pt)
+    
+    return result
+
+
+def _find_mirror_edge(screen_points, edge_idx, center, angle):
+    """Find the edge on the mirror side corresponding to the given edge."""
+    if edge_idx < 0 or edge_idx >= len(screen_points):
+        return -1
+    
+    # Get midpoint of the edge
+    p1 = screen_points[edge_idx]
+    p2 = screen_points[(edge_idx + 1) % len(screen_points)]
+    mid = ((p1[0] + p2[0]) / 2, (p1[1] + p2[1]) / 2)
+    
+    # Mirror the midpoint
+    mirrored_mid = _mirror_point(mid, center, angle)
+    
+    # Find edge closest to mirrored midpoint
+    best_edge = -1
+    best_dist = float('inf')
+    
+    for i in range(len(screen_points)):
+        if i == edge_idx:
+            continue
+        ep1 = screen_points[i]
+        ep2 = screen_points[(i + 1) % len(screen_points)]
+        edge_mid = ((ep1[0] + ep2[0]) / 2, (ep1[1] + ep2[1]) / 2)
+        dist = math.sqrt((edge_mid[0] - mirrored_mid[0])**2 + (edge_mid[1] - mirrored_mid[1])**2)
+        if dist < best_dist:
+            best_dist = dist
+            best_edge = i
+    
+    return best_edge if best_dist < 50 else -1
+
+
 def _normalize_screen_points_to_profile(screen_points):
     """Convert screen-space points to normalized 2D profile points."""
     if not screen_points or len(screen_points) < 3:
@@ -248,6 +529,10 @@ def _cancel_profile_edit_mode(operator, context):
     state.custom_profile_rotating = False
     state.custom_profile_moving = False
     state.custom_profile_transform_start_pos = None
+    state.custom_profile_symmetry = False
+    state.custom_profile_symmetry_angle = 0.0
+    state.custom_profile_symmetry_center = None
+    state.custom_profile_point_pairs = {}
     
     operator.report({'INFO'}, "Profile edit cancelled")
     context.area.tag_redraw()
@@ -420,10 +705,32 @@ def modal_handler(operator, context, event):
             state.custom_profile_moving = False
             state.custom_profile_transform_start_pos = None
             
+            # Restore symmetry state from slot
+            slot_symmetry = state.custom_profile_slot_symmetry[slot_index] if slot_index < len(state.custom_profile_slot_symmetry) else False
+            state.custom_profile_symmetry = slot_symmetry
+            state.custom_profile_symmetry_angle = 0.0  # Always start with vertical axis
+            state.custom_profile_symmetry_center = None  # Will be set after screen points are generated
+            state.custom_profile_point_pairs = {}
+            
             if state.custom_profile_points and len(state.custom_profile_points) >= 3:
                 screen_points = _profile_points_to_screen(state.custom_profile_points, context)
+                
+                # If symmetry was enabled, filter to only right-side points
+                if slot_symmetry and len(screen_points) >= 2:
+                    center = _get_profile_center(screen_points)
+                    state.custom_profile_symmetry_center = center
+                    # Keep only right-side points (positive X relative to center after rotation)
+                    right_side_points = []
+                    for pt in screen_points:
+                        if _is_point_on_right_side(pt, center, 0.0):
+                            right_side_points.append(pt)
+                    # Use right-side points only (mirror will be generated automatically)
+                    if len(right_side_points) >= 1:
+                        screen_points = right_side_points
+                
                 state._custom_profile_data['screen_points'] = screen_points
-                operator.report({'INFO'}, f"Edit Custom Profile {slot_num}: LMB add/move, RMB delete, Enter accept, Esc cancel")
+                sym_status = " (Symmetry ON)" if slot_symmetry else ""
+                operator.report({'INFO'}, f"Edit Custom Profile {slot_num}{sym_status}: LMB add/move, RMB delete, Enter accept, Esc cancel")
             else:
                 state._custom_profile_data['screen_points'] = []
                 operator.report({'INFO'}, f"Draw Custom Profile {slot_num}: LMB add, RMB delete, Enter accept, Esc cancel")
@@ -831,20 +1138,59 @@ def _handle_custom_profile_mode(operator, context, event):
             # Check edge hover for insertion
             if state.custom_profile_hover_edge >= 0 and state.custom_profile_hover_edge_point is not None:
                 insert_idx = state.custom_profile_hover_edge + 1
-                screen_points.insert(insert_idx, state.custom_profile_hover_edge_point)
+                insert_point = state.custom_profile_hover_edge_point
+                
+                # In symmetry mode, validate insertion point is on right side
+                if getattr(state, 'custom_profile_symmetry', False):
+                    center = state.custom_profile_symmetry_center
+                    angle = state.custom_profile_symmetry_angle
+                    if center and not _is_point_on_right_side(insert_point, center, angle):
+                        operator.report({'WARNING'}, "Can only insert points on the right side")
+                        return {'RUNNING_MODAL'}
+                
+                screen_points.insert(insert_idx, insert_point)
                 state.custom_profile_active_index = insert_idx
                 state.custom_profile_hover_edge = -1
                 state.custom_profile_hover_edge_point = None
                 operator.report({'INFO'}, f"Profile point inserted ({len(screen_points)} total)")
-                _update_mesh_from_profile_edit(operator, context, screen_points)
+                
+                # In symmetry mode, update with full symmetric profile
+                if getattr(state, 'custom_profile_symmetry', False):
+                    center = state.custom_profile_symmetry_center
+                    angle = state.custom_profile_symmetry_angle
+                    full_profile = _generate_symmetric_profile(screen_points, center, angle)
+                    _update_mesh_from_profile_edit(operator, context, full_profile)
+                else:
+                    _update_mesh_from_profile_edit(operator, context, screen_points)
+                
                 context.area.tag_redraw()
                 return {'RUNNING_MODAL'}
             
-            # Add new point
-            screen_points.append(mouse_pos)
-            state._custom_profile_data['screen_points'] = screen_points
-            operator.report({'INFO'}, f"Profile point {len(screen_points)} added")
-            _update_mesh_from_profile_edit(operator, context, screen_points)
+            # Add new point (with symmetry restrictions if enabled)
+            if getattr(state, 'custom_profile_symmetry', False):
+                # In symmetry mode, only allow points on right side
+                # Use the fixed symmetry center
+                center = state.custom_profile_symmetry_center
+                angle = state.custom_profile_symmetry_angle
+                
+                if not _is_point_on_right_side(mouse_pos, center, angle):
+                    operator.report({'WARNING'}, "Place points on the right side of symmetry line")
+                    return {'RUNNING_MODAL'}
+                
+                # Add point to right-side collection
+                screen_points.append(mouse_pos)
+                state._custom_profile_data['screen_points'] = screen_points
+                operator.report({'INFO'}, f"Profile point {len(screen_points)} added (right side)")
+                
+                # Generate full symmetric profile for mesh preview
+                full_profile = _generate_symmetric_profile(screen_points, center, angle)
+                _update_mesh_from_profile_edit(operator, context, full_profile)
+            else:
+                screen_points.append(mouse_pos)
+                state._custom_profile_data['screen_points'] = screen_points
+                operator.report({'INFO'}, f"Profile point {len(screen_points)} added")
+                _update_mesh_from_profile_edit(operator, context, screen_points)
+            
             context.area.tag_redraw()
             return {'RUNNING_MODAL'}
         
@@ -865,7 +1211,16 @@ def _handle_custom_profile_mode(operator, context, event):
             operator.report({'INFO'}, f"Profile point deleted ({len(screen_points)} remaining)")
             state.custom_profile_hover_index = -1
             state.custom_profile_hover_edge = -1
-            _update_mesh_from_profile_edit(operator, context, screen_points)
+            
+            # In symmetry mode, update with full symmetric profile
+            if getattr(state, 'custom_profile_symmetry', False) and len(screen_points) >= 1:
+                center = state.custom_profile_symmetry_center
+                angle = state.custom_profile_symmetry_angle
+                full_profile = _generate_symmetric_profile(screen_points, center, angle)
+                _update_mesh_from_profile_edit(operator, context, full_profile)
+            else:
+                _update_mesh_from_profile_edit(operator, context, screen_points)
+            
             context.area.tag_redraw()
             return {'RUNNING_MODAL'}
         return {'RUNNING_MODAL'}
@@ -888,18 +1243,10 @@ def _handle_custom_profile_mode(operator, context, event):
             context.area.tag_redraw()
             return {'RUNNING_MODAL'}
     
-    # Handle profile rotation (R key held)
+    # Rotation disabled in profile drawing mode - causes issues with symmetry
+    # R key is blocked to prevent accidental activation
     if event.type == 'R':
-        if event.value == 'PRESS' and not state.custom_profile_rotating:
-            state.custom_profile_rotating = True
-            state.custom_profile_transform_start_pos = mouse_pos
-            operator.report({'INFO'}, "Rotating profile (move mouse to rotate)")
-            return {'RUNNING_MODAL'}
-        elif event.value == 'RELEASE':
-            state.custom_profile_rotating = False
-            state.custom_profile_transform_start_pos = None
-            context.area.tag_redraw()
-            return {'RUNNING_MODAL'}
+        return {'RUNNING_MODAL'}
     
     # Handle profile moving (G key held)
     if event.type == 'G':
@@ -923,6 +1270,47 @@ def _handle_custom_profile_mode(operator, context, event):
         context.area.tag_redraw()
         return {'RUNNING_MODAL'}
     
+    # Handle symmetry toggle (X key) - block from main handler
+    if event.type == 'X' and event.value == 'PRESS':
+        state.custom_profile_symmetry = not state.custom_profile_symmetry
+        if state.custom_profile_symmetry:
+            # Lock the symmetry center when enabling
+            if len(screen_points) >= 1:
+                center = _get_profile_center(screen_points)
+                state.custom_profile_symmetry_center = center
+                angle = state.custom_profile_symmetry_angle
+                
+                # Extract right-side points and generate center crossing points
+                new_points = _extract_right_side_with_crossings(screen_points, center, angle)
+                screen_points.clear()
+                screen_points.extend(new_points)
+                state._custom_profile_data['screen_points'] = screen_points
+                
+                # Update mesh preview with symmetric profile
+                full_profile = _generate_symmetric_profile(screen_points, center, angle)
+                _update_mesh_from_profile_edit(operator, context, full_profile)
+            else:
+                # Use screen center if no points yet
+                region = context.region
+                state.custom_profile_symmetry_center = (region.width / 2, region.height / 2)
+        else:
+            # When disabling symmetry, realize mirrored points as real editable points
+            if len(screen_points) >= 1 and state.custom_profile_symmetry_center:
+                center = state.custom_profile_symmetry_center
+                angle = state.custom_profile_symmetry_angle
+                # Generate full profile with all mirrored points
+                full_profile = _generate_symmetric_profile(screen_points, center, angle)
+                # Replace screen_points with full realized profile
+                screen_points.clear()
+                screen_points.extend(full_profile)
+                state._custom_profile_data['screen_points'] = screen_points
+                _update_mesh_from_profile_edit(operator, context, screen_points)
+            state.custom_profile_symmetry_center = None
+        status = "ON" if state.custom_profile_symmetry else "OFF"
+        operator.report({'INFO'}, f"Profile symmetry: {status}")
+        context.area.tag_redraw()
+        return {'RUNNING_MODAL'}
+    
     # Mouse move for dragging, hover, and transforms
     if event.type == 'MOUSEMOVE':
         # Update last_mouse_pos so cursor HUD follows the cursor
@@ -935,21 +1323,32 @@ def _handle_custom_profile_mode(operator, context, event):
             dy = mouse_pos[1] - start_pos[1]
             scale_factor = 1.0 + (dx + dy) * 0.005
             scale_factor = max(0.1, min(5.0, scale_factor))
-            new_points = _scale_profile_points(screen_points, scale_factor)
-            state._custom_profile_data['screen_points'] = new_points
-            state.custom_profile_transform_start_pos = mouse_pos
-            _update_mesh_from_profile_edit(operator, context, new_points)
-            context.area.tag_redraw()
-            return {'RUNNING_MODAL'}
-        
-        # Handle rotation while R is held
-        if state.custom_profile_rotating and state.custom_profile_transform_start_pos and len(screen_points) >= 2:
-            start_pos = state.custom_profile_transform_start_pos
-            center = _get_profile_center(screen_points)
-            start_angle = math.atan2(start_pos[1] - center[1], start_pos[0] - center[0])
-            current_angle = math.atan2(mouse_pos[1] - center[1], mouse_pos[0] - center[0])
-            angle_diff = current_angle - start_angle
-            new_points = _rotate_profile_points(screen_points, angle_diff)
+            
+            # In symmetry mode, scale from the symmetry line (center point on axis)
+            if getattr(state, 'custom_profile_symmetry', False) and state.custom_profile_symmetry_center:
+                sym_center = state.custom_profile_symmetry_center
+                angle = state.custom_profile_symmetry_angle
+                new_points = []
+                for pt in screen_points:
+                    if _is_point_on_axis(pt, sym_center, angle):
+                        # Center points scale along axis only (distance from sym_center along axis)
+                        # Project to get position along axis, then scale that
+                        projected = _project_point_to_axis(pt, sym_center, angle)
+                        dx_axis = projected[0] - sym_center[0]
+                        dy_axis = projected[1] - sym_center[1]
+                        new_pos = (sym_center[0] + dx_axis * scale_factor,
+                                   sym_center[1] + dy_axis * scale_factor)
+                        # Keep on axis
+                        new_points.append(_project_point_to_axis(new_pos, sym_center, angle))
+                    else:
+                        # Scale distance from symmetry center
+                        dx_pt = pt[0] - sym_center[0]
+                        dy_pt = pt[1] - sym_center[1]
+                        new_points.append((sym_center[0] + dx_pt * scale_factor, 
+                                          sym_center[1] + dy_pt * scale_factor))
+            else:
+                new_points = _scale_profile_points(screen_points, scale_factor)
+            
             state._custom_profile_data['screen_points'] = new_points
             state.custom_profile_transform_start_pos = mouse_pos
             _update_mesh_from_profile_edit(operator, context, new_points)
@@ -960,7 +1359,23 @@ def _handle_custom_profile_mode(operator, context, event):
         if state.custom_profile_moving and state.custom_profile_transform_start_pos and len(screen_points) >= 1:
             start_pos = state.custom_profile_transform_start_pos
             offset = (mouse_pos[0] - start_pos[0], mouse_pos[1] - start_pos[1])
-            new_points = _move_profile_points(screen_points, offset)
+            
+            # In symmetry mode, center points move along axis only
+            if getattr(state, 'custom_profile_symmetry', False) and state.custom_profile_symmetry_center:
+                sym_center = state.custom_profile_symmetry_center
+                angle = state.custom_profile_symmetry_angle
+                new_points = []
+                for pt in screen_points:
+                    if _is_point_on_axis(pt, sym_center, angle):
+                        # Center points move along axis only - project the offset onto the axis
+                        moved_pt = (pt[0] + offset[0], pt[1] + offset[1])
+                        new_points.append(_project_point_to_axis(moved_pt, sym_center, angle))
+                    else:
+                        # Move right-side points freely
+                        new_points.append((pt[0] + offset[0], pt[1] + offset[1]))
+            else:
+                new_points = _move_profile_points(screen_points, offset)
+            
             state._custom_profile_data['screen_points'] = new_points
             state.custom_profile_transform_start_pos = mouse_pos
             _update_mesh_from_profile_edit(operator, context, new_points)
@@ -969,8 +1384,28 @@ def _handle_custom_profile_mode(operator, context, event):
         
         # Handle point dragging
         if state.custom_profile_active_index >= 0 and state.custom_profile_active_index < len(screen_points):
-            screen_points[state.custom_profile_active_index] = mouse_pos
-            _update_mesh_from_profile_edit(operator, context, screen_points)
+            # In symmetry mode, constrain movement
+            if getattr(state, 'custom_profile_symmetry', False):
+                center = state.custom_profile_symmetry_center
+                angle = state.custom_profile_symmetry_angle
+                current_pt = screen_points[state.custom_profile_active_index]
+                
+                # Check if this point is on the axis (center point)
+                if center and _is_point_on_axis(current_pt, center, angle):
+                    # Center point - lock to axis, only allow movement along it
+                    new_pos = _project_point_to_axis(mouse_pos, center, angle)
+                    screen_points[state.custom_profile_active_index] = new_pos
+                    full_profile = _generate_symmetric_profile(screen_points, center, angle)
+                    _update_mesh_from_profile_edit(operator, context, full_profile)
+                elif center and _is_point_on_right_side(mouse_pos, center, angle):
+                    # Right-side point - allow free movement on right side
+                    screen_points[state.custom_profile_active_index] = mouse_pos
+                    full_profile = _generate_symmetric_profile(screen_points, center, angle)
+                    _update_mesh_from_profile_edit(operator, context, full_profile)
+                # Else: trying to drag to left side - don't move
+            else:
+                screen_points[state.custom_profile_active_index] = mouse_pos
+                _update_mesh_from_profile_edit(operator, context, screen_points)
             context.area.tag_redraw()
             return {'RUNNING_MODAL'}
         
@@ -989,8 +1424,19 @@ def _handle_custom_profile_mode(operator, context, event):
     
     # Enter to confirm profile
     if event.type in {'RET', 'NUMPAD_ENTER'} and event.value == 'PRESS':
-        if len(screen_points) >= 3:
-            normalized_points = _normalize_screen_points_to_profile(screen_points)
+        # In symmetry mode, need fewer right-side points since we double them
+        min_points = 2 if getattr(state, 'custom_profile_symmetry', False) else 3
+        
+        if len(screen_points) >= min_points:
+            # In symmetry mode, generate full profile from right-side points
+            if getattr(state, 'custom_profile_symmetry', False):
+                center = state.custom_profile_symmetry_center
+                angle = state.custom_profile_symmetry_angle
+                full_profile = _generate_symmetric_profile(screen_points, center, angle)
+                normalized_points = _normalize_screen_points_to_profile(full_profile)
+            else:
+                normalized_points = _normalize_screen_points_to_profile(screen_points)
+            
             state.custom_profile_points = normalized_points
             state.custom_profile_curve_name = "Drawn"
             state.profile_global_type = state.PROFILE_CUSTOM
@@ -1001,6 +1447,8 @@ def _handle_custom_profile_mode(operator, context, event):
             slot_index = getattr(state, 'active_custom_profile_slot', 0)
             if slot_index < len(state.custom_profile_slots):
                 state.custom_profile_slots[slot_index] = list(normalized_points)
+                # Also save symmetry state for this slot
+                state.custom_profile_slot_symmetry[slot_index] = getattr(state, 'custom_profile_symmetry', False)
             slot_num = slot_index + 4
             
             # Persist to scene data
@@ -1013,7 +1461,7 @@ def _handle_custom_profile_mode(operator, context, event):
                 mesh_utils.update_preview_mesh(context, state.points_3d, state.point_radii_3d, 
                                               resolution=operator.resolution, segments=operator.segments)
         else:
-            operator.report({'WARNING'}, "Need at least 3 points for a profile")
+            operator.report({'WARNING'}, f"Need at least {min_points} points for a profile")
         
         # Set lockout if G was being used to prevent group move trigger
         if state.custom_profile_moving:
@@ -1031,6 +1479,10 @@ def _handle_custom_profile_mode(operator, context, event):
         state.custom_profile_rotating = False
         state.custom_profile_moving = False
         state.custom_profile_transform_start_pos = None
+        state.custom_profile_symmetry = False
+        state.custom_profile_symmetry_angle = 0.0
+        state.custom_profile_symmetry_center = None
+        state.custom_profile_point_pairs = {}
         context.area.tag_redraw()
         return {'RUNNING_MODAL'}
     
@@ -1050,21 +1502,7 @@ def handle_accept_and_continue(operator, context):
         operator._finalize(context, do_cleanup=False)
         
         # Remove the preview mesh but keep the drawing handler
-        if state.preview_mesh_obj is not None:
-            try:
-                if state.preview_mesh_obj.name in bpy.data.objects:
-                    mesh_data = state.preview_mesh_obj.data
-                    # Clear material slots before deletion to avoid stale references
-                    if state.preview_mesh_obj.data.materials:
-                        state.preview_mesh_obj.data.materials.clear()
-                    for collection in state.preview_mesh_obj.users_collection:
-                        collection.objects.unlink(state.preview_mesh_obj)
-                    bpy.data.objects.remove(state.preview_mesh_obj)
-                    if mesh_data and mesh_data.name in bpy.data.meshes and mesh_data.users == 0:
-                        bpy.data.meshes.remove(mesh_data)
-            except:
-                pass
-            state.preview_mesh_obj = None
+        state.cleanup_preview_mesh()
         
         # Force view layer update to ensure depsgraph is consistent
         context.view_layer.update()
@@ -1266,6 +1704,15 @@ def switch_target_flex(operator, context, event):
             'matrix_world': child.matrix_world.copy(),
             'matrix_parent_inverse': child.matrix_parent_inverse.copy(),
         })
+    
+    # Unparent children using CLEAR_KEEP_TRANSFORM
+    for child_data in operator._original_children:
+        child = bpy.data.objects.get(child_data['name'])
+        if child:
+            bpy.ops.object.select_all(action='DESELECT')
+            child.select_set(True)
+            context.view_layer.objects.active = child
+            bpy.ops.object.parent_clear(type='CLEAR_KEEP_TRANSFORM')
 
     # Load curve data from the flex object
     if not curve_data_json:
