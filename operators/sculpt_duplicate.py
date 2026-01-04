@@ -1,13 +1,73 @@
 import bpy
 import gpu
 import math
+import time
+from array import array
 from mathutils import Vector, Matrix
 from bpy_extras import view3d_utils
 from gpu_extras.batch import batch_for_shader
 
+try:
+    import numpy as np
+    HAS_NUMPY = True
+except Exception:
+    np = None
+    HAS_NUMPY = False
+
 PRECISION_FACTOR = 0.1
 CENTER_CIRCLE_RADIUS = 10  # pixels
 CENTER_CIRCLE_SEGMENTS = 24
+
+# Profiling
+PROFILE_ENABLED = False
+_profile_times = {}
+_profile_counts = {}
+_profile_frame = 0
+
+def profile_start(name):
+    if PROFILE_ENABLED:
+        _profile_times[name] = time.perf_counter()
+
+def profile_end(name):
+    global _profile_frame
+    if PROFILE_ENABLED and name in _profile_times:
+        elapsed = (time.perf_counter() - _profile_times[name]) * 1000  # ms
+        if name not in _profile_counts:
+            _profile_counts[name] = {'total': 0.0, 'count': 0, 'max': 0.0}
+        _profile_counts[name]['total'] += elapsed
+        _profile_counts[name]['count'] += 1
+        _profile_counts[name]['max'] = max(_profile_counts[name]['max'], elapsed)
+
+def profile_report():
+    """Print profile report - call this periodically."""
+    if not PROFILE_ENABLED:
+        return
+
+    global _profile_frame, _profile_counts
+    _profile_frame += 1
+    if _profile_frame % 30 == 0 and _profile_counts:
+        parts = []
+        for name, data in _profile_counts.items():
+            if data['count'] > 0:
+                avg = data['total'] / data['count']
+                parts.append(f"{name}={avg:.1f}ms")
+        if parts:
+            print(f"[PROFILE] {', '.join(parts)}")
+
+
+def profile_report_timer():
+    """Print a profile report intended to be called from a TIMER event."""
+    if not PROFILE_ENABLED or not _profile_counts:
+        return
+
+    parts = []
+    for name, data in _profile_counts.items():
+        if data['count'] > 0:
+            avg = data['total'] / data['count']
+            parts.append(f"{name}={avg:.1f}ms")
+
+    if parts:
+        print(f"[PROFILE] {', '.join(parts)}")
 
 
 def get_addon_prefs():
@@ -83,11 +143,19 @@ class SCULPT_OT_super_duplicate(bpy.types.Operator):
         else:
             self._new_obj = obj
 
+        self._start_matrix_world = self._new_obj.matrix_world.copy()
+        self._start_location = self._new_obj.location.copy()
+        self._start_rotation = self._new_obj.rotation_euler.copy()
+        self._start_scale = self._new_obj.scale.copy()
+        self._current_matrix_world = self._start_matrix_world.copy()
+
         # Check if this is a flex mesh - use object transform instead of vertex manipulation
         self._is_flex_mesh = "flex_curve_data" in self._new_obj
 
         mesh = self._new_obj.data
         self._original_coords = [v.co.copy() for v in mesh.vertices]
+        self._original_coords_flat = array('f', [0.0]) * (len(mesh.vertices) * 3)
+        mesh.vertices.foreach_get('co', self._original_coords_flat)
 
         if len(self._original_coords) > 0:
             self._median_local = sum(self._original_coords, Vector()) / len(self._original_coords)
@@ -95,22 +163,20 @@ class SCULPT_OT_super_duplicate(bpy.types.Operator):
             self._median_local = Vector((0, 0, 0))
 
         self._current_coords = [v.copy() for v in self._original_coords]
+        self._current_coords_flat = array('f', self._original_coords_flat)
         
-        # For flex meshes, store original transform
-        if self._is_flex_mesh:
-            self._original_location = self._new_obj.location.copy()
-            self._original_rotation = self._new_obj.rotation_euler.copy()
-            self._original_scale = self._new_obj.scale.copy()
-            self._current_location = self._original_location.copy()
-            self._current_rotation = self._original_rotation.copy()
-            self._current_scale = self._original_scale.copy()
+        self._current_location = self._start_location.copy()
+        self._current_rotation = self._start_rotation.copy()
+        self._current_scale = self._start_scale.copy()
 
         self._mode = self.MODE_MOVE
         self._initial_mouse = Vector((event.mouse_region_x, event.mouse_region_y))
+        self._constraint_axis = None
 
         # Transform center (in local space) - can be adjusted with Space
         self._transform_center_local = self._median_local.copy()
         self._transform_center_initial = self._transform_center_local.copy()
+        self._pivot_world = self._current_matrix_world @ self._transform_center_local
         self._adjusting_center = False
         self._center_adjust_mouse = None
 
@@ -119,6 +185,13 @@ class SCULPT_OT_super_duplicate(bpy.types.Operator):
             self._draw_transform_center, (context,), 'WINDOW', 'POST_VIEW'
         )
 
+        # Profiling timer
+        self._profile_timer = None
+        if PROFILE_ENABLED:
+            self._profile_timer = context.window_manager.event_timer_add(
+                0.5, window=context.window
+            )
+
         # Cache hotkeys from preferences
         prefs = get_addon_prefs()
         if prefs:
@@ -126,27 +199,37 @@ class SCULPT_OT_super_duplicate(bpy.types.Operator):
             self._key_rotate = prefs.sd_key_rotate.upper()
             self._key_scale = prefs.sd_key_scale.upper()
             self._key_center = prefs.sd_key_adjust_center.upper()
-            self._key_mirror_x = prefs.sd_key_mirror_x.upper()
-            self._key_mirror_y = prefs.sd_key_mirror_y.upper()
-            self._key_mirror_z = prefs.sd_key_mirror_z.upper()
         else:
             # Defaults if preferences not available
             self._key_move = 'G'
             self._key_rotate = 'R'
             self._key_scale = 'S'
             self._key_center = 'SPACE'
-            self._key_mirror_x = 'X'
-            self._key_mirror_y = 'Y'
-            self._key_mirror_z = 'Z'
+
+        self._key_mirror_x = 'X'
+        self._key_mirror_y = 'Y'
+        self._key_mirror_z = 'Z'
 
         context.window_manager.modal_handler_add(self)
         context.area.tag_redraw()
 
         mode_text = "Duplicate" if self.duplicate else "Transform"
-        self.report({'INFO'}, f"{mode_text}: {self._key_move} | {self._key_rotate}/{self._key_scale} (hold) | {self._key_mirror_x}/{self._key_mirror_y}/{self._key_mirror_z}: Mirror | {self._key_center}: Adjust Center | Shift: Precision")
+        self.report({'INFO'}, f"{mode_text}: {self._key_move} | {self._key_rotate}/{self._key_scale} (hold) | X/Y/Z: Axis Constraint | Alt+X/Y/Z: Mirror | {self._key_center}: Adjust Center | Shift: Precision")
         return {'RUNNING_MODAL'}
 
     def modal(self, context, event):
+        global _profile_counts, _profile_frame
+        # Reset profiling on first modal call
+        if PROFILE_ENABLED and not hasattr(self, '_profile_started'):
+            self._profile_started = True
+            _profile_counts.clear()
+            _profile_frame = 0
+            print("[PROFILE] Profiling started - move mouse to see stats")
+
+        if PROFILE_ENABLED and event.type == 'TIMER':
+            profile_report_timer()
+            return {'RUNNING_MODAL'}
+        
         # Handle adjust center key
         if event.type == self._key_center:
             if event.value == 'PRESS':
@@ -164,10 +247,20 @@ class SCULPT_OT_super_duplicate(bpy.types.Operator):
                 return {'RUNNING_MODAL'}
 
         if event.type == 'MOUSEMOVE':
+            profile_report()
             if self._adjusting_center:
                 self._update_transform_center(context, event)
             else:
                 self._update_geometry(context, event)
+            return {'RUNNING_MODAL'}
+
+        elif event.type in {'X', 'Y', 'Z'} and event.value == 'PRESS' and not event.alt:
+            if self._constraint_axis == event.type:
+                self._constraint_axis = None
+                self.report({'INFO'}, "Axis Constraint: OFF")
+            else:
+                self._constraint_axis = event.type
+                self.report({'INFO'}, f"Axis Constraint: {event.type}")
             return {'RUNNING_MODAL'}
 
         elif event.type == self._key_move and event.value == 'PRESS':
@@ -209,11 +302,15 @@ class SCULPT_OT_super_duplicate(bpy.types.Operator):
                 return {'RUNNING_MODAL'}
 
         elif event.type in {'LEFTMOUSE', 'RET', 'NUMPAD_ENTER'} and event.value == 'PRESS':
+            if not self._is_flex_mesh:
+                self._bake_object_transform_to_mesh()
+
             self._cleanup_drawing()
-            # Push final undo step with the result
             bpy.ops.ed.undo_push(message="Super Duplicate")
             self._restore_mode()
-            self.report({'INFO'}, "Super Duplicate confirmed")
+
+            mode_text = "Super Duplicate" if self.duplicate else "Super Transform"
+            self.report({'INFO'}, f"{mode_text} confirmed")
             return {'FINISHED'}
 
         elif event.type in {'RIGHTMOUSE', 'ESC'} and event.value == 'PRESS':
@@ -223,15 +320,15 @@ class SCULPT_OT_super_duplicate(bpy.types.Operator):
             bpy.ops.ed.undo()
             return {'CANCELLED'}
 
-        elif event.type == self._key_mirror_x and event.value == 'PRESS':
+        elif event.type == self._key_mirror_x and event.value == 'PRESS' and event.alt:
             self._toggle_mirror_axis('X')
             return {'RUNNING_MODAL'}
 
-        elif event.type == self._key_mirror_y and event.value == 'PRESS':
+        elif event.type == self._key_mirror_y and event.value == 'PRESS' and event.alt:
             self._toggle_mirror_axis('Y')
             return {'RUNNING_MODAL'}
 
-        elif event.type == self._key_mirror_z and event.value == 'PRESS':
+        elif event.type == self._key_mirror_z and event.value == 'PRESS' and event.alt:
             self._toggle_mirror_axis('Z')
             return {'RUNNING_MODAL'}
 
@@ -242,21 +339,138 @@ class SCULPT_OT_super_duplicate(bpy.types.Operator):
 
     def _commit_current_transform(self):
         """Commit current transform to working coords before switching modes."""
-        if self._is_flex_mesh:
-            # Commit object transform
-            self._current_location = self._new_obj.location.copy()
-            self._current_rotation = self._new_obj.rotation_euler.copy()
-            self._current_scale = self._new_obj.scale.copy()
-        else:
-            mesh = self._new_obj.data
-            self._current_coords = [v.co.copy() for v in mesh.vertices]
-            if len(self._current_coords) > 0:
-                self._median_local = sum(self._current_coords, Vector()) / len(self._current_coords)
+        self._current_matrix_world = self._new_obj.matrix_world.copy()
+        self._pivot_world = self._current_matrix_world @ self._transform_center_local
         # Also commit the transform center
         self._transform_center_initial = self._transform_center_local.copy()
 
+    def _bake_object_transform_to_mesh(self):
+        mesh = self._new_obj.data
+
+        mat_delta = self._start_matrix_world.inverted() @ self._new_obj.matrix_world
+
+        if HAS_NUMPY:
+            base = np.frombuffer(self._original_coords_flat, dtype=np.float32)
+            coords = base.reshape((-1, 3)).copy()
+            ones = np.ones((coords.shape[0], 1), dtype=np.float32)
+            coords4 = np.concatenate((coords, ones), axis=1)
+            mat_np = np.array(mat_delta, dtype=np.float32)
+            out = coords4 @ mat_np.T
+            mesh.vertices.foreach_set('co', out[:, :3].astype(np.float32).ravel())
+        else:
+            coords = array('f', self._original_coords_flat)
+            out = array('f', [0.0]) * len(coords)
+            for i in range(0, len(coords), 3):
+                v = Vector((coords[i], coords[i + 1], coords[i + 2], 1.0))
+                r = mat_delta @ v
+                out[i] = r.x
+                out[i + 1] = r.y
+                out[i + 2] = r.z
+            mesh.vertices.foreach_set('co', out)
+
+        mesh.update()
+        self._new_obj.matrix_world = self._start_matrix_world
+        self._current_matrix_world = self._start_matrix_world.copy()
+
+    def _apply_local_offset_to_vertices(self, local_offset):
+        """Apply a local-space offset to all vertices using bulk APIs."""
+        mesh = self._new_obj.data
+
+        if HAS_NUMPY:
+            base = np.frombuffer(self._current_coords_flat, dtype=np.float32)
+            coords = base.reshape((-1, 3)).copy()
+            coords[:, 0] += local_offset.x
+            coords[:, 1] += local_offset.y
+            coords[:, 2] += local_offset.z
+            mesh.vertices.foreach_set('co', coords.ravel())
+        else:
+            coords = array('f', self._current_coords_flat)
+            ox = float(local_offset.x)
+            oy = float(local_offset.y)
+            oz = float(local_offset.z)
+            for i in range(0, len(coords), 3):
+                coords[i] += ox
+                coords[i + 1] += oy
+                coords[i + 2] += oz
+            mesh.vertices.foreach_set('co', coords)
+
+        mesh.update()
+
+    def _apply_rotation_to_vertices(self, rot_matrix, center_world):
+        """Apply a world-space rotation around center_world to all vertices."""
+        mesh = self._new_obj.data
+
+        mat_world = self._new_obj.matrix_world
+        mw3 = mat_world.to_3x3()
+        mw_t = mat_world.translation
+
+        mw3_inv = mw3.inverted()
+        rot3 = rot_matrix.to_3x3()
+
+        if HAS_NUMPY:
+            base = np.frombuffer(self._current_coords_flat, dtype=np.float32)
+            local = base.reshape((-1, 3)).copy()
+
+            mw3_np = np.array(mw3, dtype=np.float32)
+            mw_t_np = np.array((mw_t.x, mw_t.y, mw_t.z), dtype=np.float32)
+            center_np = np.array(
+                (center_world.x, center_world.y, center_world.z),
+                dtype=np.float32
+            )
+            rot_np = np.array(rot3, dtype=np.float32)
+            mw3_inv_np = np.array(mw3_inv, dtype=np.float32)
+
+            world = local @ mw3_np.T + mw_t_np
+            rel = world - center_np
+            rotated_rel = rel @ rot_np.T
+            new_world = center_np + rotated_rel
+            new_local = (new_world - mw_t_np) @ mw3_inv_np.T
+
+            mesh.vertices.foreach_set('co', new_local.astype(np.float32).ravel())
+        else:
+            coords = array('f', self._current_coords_flat)
+            for i in range(0, len(coords), 3):
+                local_pos = Vector((coords[i], coords[i + 1], coords[i + 2]))
+                world_pos = mw3 @ local_pos + mw_t
+                rel = world_pos - center_world
+                rotated_rel = rot3 @ rel
+                new_world = center_world + rotated_rel
+                new_local = mw3_inv @ (new_world - mw_t)
+                coords[i] = new_local.x
+                coords[i + 1] = new_local.y
+                coords[i + 2] = new_local.z
+            mesh.vertices.foreach_set('co', coords)
+
+        mesh.update()
+
+    def _apply_scale_to_vertices(self, scale):
+        """Apply a local-space scale about transform center to all vertices."""
+        mesh = self._new_obj.data
+        cx = float(self._transform_center_local.x)
+        cy = float(self._transform_center_local.y)
+        cz = float(self._transform_center_local.z)
+        s = float(scale)
+
+        if HAS_NUMPY:
+            base = np.frombuffer(self._current_coords_flat, dtype=np.float32)
+            coords = base.reshape((-1, 3)).copy()
+            coords[:, 0] = cx + (coords[:, 0] - cx) * s
+            coords[:, 1] = cy + (coords[:, 1] - cy) * s
+            coords[:, 2] = cz + (coords[:, 2] - cz) * s
+            mesh.vertices.foreach_set('co', coords.ravel())
+        else:
+            coords = array('f', self._current_coords_flat)
+            for i in range(0, len(coords), 3):
+                coords[i] = cx + (coords[i] - cx) * s
+                coords[i + 1] = cy + (coords[i + 1] - cy) * s
+                coords[i + 2] = cz + (coords[i + 2] - cz) * s
+            mesh.vertices.foreach_set('co', coords)
+
+        mesh.update()
+
     def _draw_transform_center(self, context):
         """Draw the transform center circle."""
+        profile_start('draw_handler')
         # Always draw the transform center
 
         # Get transform center in world space
@@ -265,6 +479,7 @@ class SCULPT_OT_super_duplicate(bpy.types.Operator):
         # Project to screen
         center_2d = view3d_utils.location_3d_to_region_2d(self._region, self._rv3d, center_world)
         if center_2d is None:
+            profile_end('draw_handler')
             return
 
         # Generate circle vertices in screen space, convert to 3D
@@ -284,6 +499,7 @@ class SCULPT_OT_super_duplicate(bpy.types.Operator):
                 vertices.append((world_pos.x, world_pos.y, world_pos.z))
 
         if not vertices:
+            profile_end('draw_handler')
             return
 
         # Create indices for line loop
@@ -306,6 +522,7 @@ class SCULPT_OT_super_duplicate(bpy.types.Operator):
 
         batch.draw(shader)
         gpu.state.blend_set('NONE')
+        profile_end('draw_handler')
 
     def _update_transform_center(self, context, event):
         """Update transform center position based on mouse movement."""
@@ -340,6 +557,13 @@ class SCULPT_OT_super_duplicate(bpy.types.Operator):
         if hasattr(self, '_draw_handler') and self._draw_handler:
             bpy.types.SpaceView3D.draw_handler_remove(self._draw_handler, 'WINDOW')
             self._draw_handler = None
+
+        if hasattr(self, '_profile_timer') and self._profile_timer:
+            try:
+                bpy.context.window_manager.event_timer_remove(self._profile_timer)
+            except Exception:
+                pass
+            self._profile_timer = None
 
     def _toggle_mirror_axis(self, axis):
         """Toggle mirror modifier on specified axis (X, Y, or Z)."""
@@ -382,196 +606,128 @@ class SCULPT_OT_super_duplicate(bpy.types.Operator):
 
     def _update_geometry(self, context, event):
         """Update vertex positions based on mouse movement."""
+        profile_start('update_geometry')
         if self._mode == self.MODE_MOVE:
             self._update_move(context, event)
         elif self._mode == self.MODE_ROTATE:
             self._update_rotate(context, event)
         elif self._mode == self.MODE_SCALE:
             self._update_scale(context, event)
+        profile_end('update_geometry')
 
     def _update_move(self, context, event):
         """Move geometry in screen space."""
+        profile_start('move_total')
         current_mouse = Vector((event.mouse_region_x, event.mouse_region_y))
         mouse_delta = current_mouse - self._initial_mouse
 
         if event.shift:
             mouse_delta *= PRECISION_FACTOR
 
-        if self._is_flex_mesh:
-            # For flex meshes, move the object itself
-            obj_world = self._new_obj.matrix_world.translation
-            obj_2d = view3d_utils.location_3d_to_region_2d(self._region, self._rv3d, obj_world)
-            if obj_2d is None:
-                return
-            
-            target_2d = obj_2d + mouse_delta
-            target_3d = view3d_utils.region_2d_to_location_3d(self._region, self._rv3d, target_2d, obj_world)
-            world_offset = target_3d - obj_world
-            
-            self._new_obj.location = self._current_location + world_offset
-            context.area.tag_redraw()
-        else:
-            # Get median in world space and its screen position
-            median_world = self._new_obj.matrix_world @ self._median_local
-            median_2d = view3d_utils.location_3d_to_region_2d(self._region, self._rv3d, median_world)
-            if median_2d is None:
-                return
+        obj_world = self._new_obj.matrix_world.translation
+        obj_2d = view3d_utils.location_3d_to_region_2d(
+            self._region, self._rv3d, obj_world
+        )
+        if obj_2d is None:
+            profile_end('move_total')
+            return
 
-            # Target screen position
-            target_2d = median_2d + mouse_delta
+        target_2d = obj_2d + mouse_delta
+        target_3d = view3d_utils.region_2d_to_location_3d(
+            self._region, self._rv3d, target_2d, obj_world
+        )
+        world_offset = target_3d - obj_world
 
-            # Unproject target back to 3D at same depth as median
-            target_3d = view3d_utils.region_2d_to_location_3d(self._region, self._rv3d, target_2d, median_world)
+        if self._constraint_axis == 'X':
+            axis = Vector((1.0, 0.0, 0.0))
+            world_offset = axis * world_offset.dot(axis)
+        elif self._constraint_axis == 'Y':
+            axis = Vector((0.0, 1.0, 0.0))
+            world_offset = axis * world_offset.dot(axis)
+        elif self._constraint_axis == 'Z':
+            axis = Vector((0.0, 0.0, 1.0))
+            world_offset = axis * world_offset.dot(axis)
 
-            # World space offset
-            world_offset = target_3d - median_world
-
-            # Convert to local space
-            mat_inv = self._new_obj.matrix_world.inverted()
-            local_offset = mat_inv.to_3x3() @ world_offset
-
-            mesh = self._new_obj.data
-            for i, v in enumerate(mesh.vertices):
-                v.co = self._current_coords[i] + local_offset
-
-            # Move transform center along with mesh (same offset as vertices)
-            self._transform_center_local = self._transform_center_initial + local_offset
-
-            mesh.update()
-            context.area.tag_redraw()
+        self._new_obj.matrix_world = Matrix.Translation(world_offset) @ \
+            self._current_matrix_world
+        context.area.tag_redraw()
+        profile_end('move_total')
 
     def _update_rotate(self, context, event):
         """Rotate geometry around transform center."""
         current_mouse = Vector((event.mouse_region_x, event.mouse_region_y))
 
-        if self._is_flex_mesh:
-            # For flex meshes, rotate the object around the transform center
-            center_world = self._new_obj.matrix_world @ self._transform_center_local
-            center_2d = view3d_utils.location_3d_to_region_2d(self._region, self._rv3d, center_world)
-            if center_2d is None:
-                return
-            
-            initial_vec = self._initial_mouse - center_2d
-            current_vec = current_mouse - center_2d
-            
-            if initial_vec.length < 1.0 or current_vec.length < 1.0:
-                return
-            
-            angle = math.atan2(current_vec.y, current_vec.x) - math.atan2(initial_vec.y, initial_vec.x)
-            
-            if event.shift:
-                angle *= PRECISION_FACTOR
-            
-            view_matrix = self._rv3d.view_matrix
-            view_dir = Vector((view_matrix[2][0], view_matrix[2][1], view_matrix[2][2])).normalized()
-            
-            # Apply rotation to object around transform center
-            rot_matrix = Matrix.Rotation(angle, 4, view_dir)
-            
-            # Rotate object orientation
-            current_rot_matrix = self._current_rotation.to_matrix().to_4x4()
-            new_rot_matrix = rot_matrix @ current_rot_matrix
-            self._new_obj.rotation_euler = new_rot_matrix.to_euler()
-            
-            # Rotate object location around center
-            obj_rel = self._current_location - center_world
-            rotated_rel = rot_matrix @ obj_rel
-            self._new_obj.location = center_world + rotated_rel
-            
-            context.area.tag_redraw()
+        center_2d = view3d_utils.location_3d_to_region_2d(
+            self._region, self._rv3d, self._pivot_world
+        )
+        if center_2d is None:
+            return
+
+        initial_vec = self._initial_mouse - center_2d
+        current_vec = current_mouse - center_2d
+
+        if initial_vec.length < 1.0 or current_vec.length < 1.0:
+            return
+
+        angle = math.atan2(current_vec.y, current_vec.x) - \
+            math.atan2(initial_vec.y, initial_vec.x)
+
+        if event.shift:
+            angle *= PRECISION_FACTOR
+
+        if self._constraint_axis == 'X':
+            axis = Vector((1.0, 0.0, 0.0))
+        elif self._constraint_axis == 'Y':
+            axis = Vector((0.0, 1.0, 0.0))
+        elif self._constraint_axis == 'Z':
+            axis = Vector((0.0, 0.0, 1.0))
         else:
-            center_world = self._new_obj.matrix_world @ self._transform_center_local
-            center_2d = view3d_utils.location_3d_to_region_2d(self._region, self._rv3d, center_world)
-            if center_2d is None:
-                return
-
-            initial_vec = self._initial_mouse - center_2d
-            current_vec = current_mouse - center_2d
-
-            if initial_vec.length < 1.0 or current_vec.length < 1.0:
-                return
-
-            angle = math.atan2(current_vec.y, current_vec.x) - math.atan2(initial_vec.y, initial_vec.x)
-
-            if event.shift:
-                angle *= PRECISION_FACTOR
-
             view_matrix = self._rv3d.view_matrix
-            view_dir = Vector((view_matrix[2][0], view_matrix[2][1], view_matrix[2][2])).normalized()
+            axis = Vector((view_matrix[2][0], view_matrix[2][1], view_matrix[2][2])).normalized()
 
-            rot_matrix = Matrix.Rotation(angle, 4, view_dir)
+        rot_matrix = Matrix.Rotation(angle, 4, axis)
 
-            mat_world = self._new_obj.matrix_world
-            mat_inv = mat_world.inverted()
+        pivot_t = Matrix.Translation(self._pivot_world)
+        pivot_t_inv = Matrix.Translation(-self._pivot_world)
+        self._new_obj.matrix_world = pivot_t @ rot_matrix @ pivot_t_inv @ \
+            self._current_matrix_world
 
-            mesh = self._new_obj.data
-            for i, v in enumerate(mesh.vertices):
-                local_pos = self._current_coords[i]
-                world_pos = mat_world @ local_pos
-                rel_pos = world_pos - center_world
-
-                rotated_rel = rot_matrix @ rel_pos
-
-                new_world = center_world + rotated_rel
-                v.co = mat_inv @ new_world
-
-            mesh.update()
-            context.area.tag_redraw()
+        context.area.tag_redraw()
 
     def _update_scale(self, context, event):
         """Scale geometry around transform center."""
         current_mouse = Vector((event.mouse_region_x, event.mouse_region_y))
+        center_2d = view3d_utils.location_3d_to_region_2d(
+            self._region, self._rv3d, self._pivot_world
+        )
+        if center_2d is None:
+            return
 
-        if self._is_flex_mesh:
-            # For flex meshes, scale the object around transform center
-            center_world = self._new_obj.matrix_world @ self._transform_center_local
-            center_2d = view3d_utils.location_3d_to_region_2d(self._region, self._rv3d, center_world)
-            if center_2d is None:
-                return
-            
-            initial_dist = (self._initial_mouse - center_2d).length
-            current_dist = (current_mouse - center_2d).length
-            
-            if initial_dist < 1.0:
-                return
-            
-            scale = current_dist / initial_dist
-            
-            if event.shift:
-                scale = 1.0 + (scale - 1.0) * PRECISION_FACTOR
-            
-            # Scale object
-            self._new_obj.scale = self._current_scale * scale
-            
-            # Scale object location relative to center
-            obj_rel = self._current_location - center_world
-            self._new_obj.location = center_world + obj_rel * scale
-            
-            context.area.tag_redraw()
+        initial_dist = (self._initial_mouse - center_2d).length
+        current_dist = (current_mouse - center_2d).length
+
+        if initial_dist < 1.0:
+            return
+
+        scale = current_dist / initial_dist
+
+        if event.shift:
+            scale = 1.0 + (scale - 1.0) * PRECISION_FACTOR
+
+        pivot_t = Matrix.Translation(self._pivot_world)
+        pivot_t_inv = Matrix.Translation(-self._pivot_world)
+        if self._constraint_axis == 'X':
+            scale_matrix = Matrix.Diagonal((scale, 1.0, 1.0, 1.0))
+        elif self._constraint_axis == 'Y':
+            scale_matrix = Matrix.Diagonal((1.0, scale, 1.0, 1.0))
+        elif self._constraint_axis == 'Z':
+            scale_matrix = Matrix.Diagonal((1.0, 1.0, scale, 1.0))
         else:
-            center_world = self._new_obj.matrix_world @ self._transform_center_local
-            center_2d = view3d_utils.location_3d_to_region_2d(self._region, self._rv3d, center_world)
-            if center_2d is None:
-                return
+            scale_matrix = Matrix.Diagonal((scale, scale, scale, 1.0))
+        self._new_obj.matrix_world = pivot_t @ scale_matrix @ pivot_t_inv @ \
+            self._current_matrix_world
 
-            initial_dist = (self._initial_mouse - center_2d).length
-            current_dist = (current_mouse - center_2d).length
-
-            if initial_dist < 1.0:
-                return
-
-            scale = current_dist / initial_dist
-
-            if event.shift:
-                scale = 1.0 + (scale - 1.0) * PRECISION_FACTOR
-
-            mesh = self._new_obj.data
-            for i, v in enumerate(mesh.vertices):
-                rel_pos = self._current_coords[i] - self._transform_center_local
-                v.co = self._transform_center_local + rel_pos * scale
-
-            mesh.update()
-            context.area.tag_redraw()
+        context.area.tag_redraw()
 
     def _cancel_operation(self, context):
         """Cancel: delete duplicate or restore original positions."""
@@ -579,23 +735,16 @@ class SCULPT_OT_super_duplicate(bpy.types.Operator):
             if self._new_obj:
                 bpy.data.objects.remove(self._new_obj, do_unlink=True)
 
-            if self._original_obj and self._original_obj.name in context.view_layer.objects:
-                self._original_obj.select_set(True)
-                context.view_layer.objects.active = self._original_obj
+            # Check if original object still exists before accessing it
+            if self._original_obj and self._original_obj.name in bpy.data.objects:
+                if self._original_obj.name in context.view_layer.objects:
+                    self._original_obj.select_set(True)
+                    context.view_layer.objects.active = self._original_obj
         else:
             # Restore original state
-            if self._new_obj and self._new_obj.name in context.view_layer.objects:
-                if self._is_flex_mesh:
-                    # Restore original transform for flex meshes
-                    self._new_obj.location = self._original_location
-                    self._new_obj.rotation_euler = self._original_rotation
-                    self._new_obj.scale = self._original_scale
-                else:
-                    # Restore original vertex positions
-                    mesh = self._new_obj.data
-                    for i, v in enumerate(mesh.vertices):
-                        v.co = self._original_coords[i]
-                    mesh.update()
+            # Check if object still exists before accessing it
+            if self._new_obj and self._new_obj.name in bpy.data.objects and self._new_obj.name in context.view_layer.objects:
+                self._new_obj.matrix_world = self._start_matrix_world
 
         self._restore_mode()
         self.report({'INFO'}, "Super Duplicate cancelled")

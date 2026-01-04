@@ -219,6 +219,13 @@ class SUPERTOOLS_OT_restore_flex_hotkey_defaults(bpy.types.Operator):
 class SuperToolsPreferences(bpy.types.AddonPreferences):
     bl_idname = __package__
 
+    def _refresh_super_keymaps(self, context):
+        try:
+            from . import keymaps
+            keymaps.register_super_duplicate_keymaps()
+        except Exception:
+            pass
+
     auto_check: bpy.props.BoolProperty(
         name="Auto-check for updates on startup",
         default=False,
@@ -324,44 +331,52 @@ class SuperToolsPreferences(bpy.types.AddonPreferences):
     super_duplicate_key: bpy.props.StringProperty(
         name="Key",
         default="",
-        description="Key for Super Duplicate (leave empty for no hotkey)"
+        description="Key for Super Duplicate (leave empty for no hotkey)",
+        update=lambda self, context: self._refresh_super_keymaps(context)
     )
     super_duplicate_alt: bpy.props.BoolProperty(
         name="Alt",
         default=False,
-        description="Require Alt modifier"
+        description="Require Alt modifier",
+        update=lambda self, context: self._refresh_super_keymaps(context)
     )
     super_duplicate_ctrl: bpy.props.BoolProperty(
         name="Ctrl",
         default=False,
-        description="Require Ctrl modifier"
+        description="Require Ctrl modifier",
+        update=lambda self, context: self._refresh_super_keymaps(context)
     )
     super_duplicate_shift: bpy.props.BoolProperty(
         name="Shift",
         default=False,
-        description="Require Shift modifier"
+        description="Require Shift modifier",
+        update=lambda self, context: self._refresh_super_keymaps(context)
     )
     
     # Super Transform Hotkey
     super_transform_key: bpy.props.StringProperty(
         name="Key",
         default="",
-        description="Key for Super Transform (leave empty for no hotkey)"
+        description="Key for Super Transform (leave empty for no hotkey)",
+        update=lambda self, context: self._refresh_super_keymaps(context)
     )
     super_transform_alt: bpy.props.BoolProperty(
         name="Alt",
         default=False,
-        description="Require Alt modifier"
+        description="Require Alt modifier",
+        update=lambda self, context: self._refresh_super_keymaps(context)
     )
     super_transform_ctrl: bpy.props.BoolProperty(
         name="Ctrl",
         default=False,
-        description="Require Ctrl modifier"
+        description="Require Ctrl modifier",
+        update=lambda self, context: self._refresh_super_keymaps(context)
     )
     super_transform_shift: bpy.props.BoolProperty(
         name="Shift",
         default=False,
-        description="Require Shift modifier"
+        description="Require Shift modifier",
+        update=lambda self, context: self._refresh_super_keymaps(context)
     )
     
     # Super Duplicate Modal Keys
@@ -384,21 +399,6 @@ class SuperToolsPreferences(bpy.types.AddonPreferences):
         name="Adjust Center",
         default="SPACE",
         description="Key for adjusting transform center (hold)"
-    )
-    sd_key_mirror_x: bpy.props.StringProperty(
-        name="Mirror X",
-        default="X",
-        description="Key for toggling X mirror"
-    )
-    sd_key_mirror_y: bpy.props.StringProperty(
-        name="Mirror Y",
-        default="Y",
-        description="Key for toggling Y mirror"
-    )
-    sd_key_mirror_z: bpy.props.StringProperty(
-        name="Mirror Z",
-        default="Z",
-        description="Key for toggling Z mirror"
     )
 
     def draw(self, context):
@@ -483,10 +483,6 @@ class SuperToolsPreferences(bpy.types.AddonPreferences):
         row.prop(self, "sd_key_scale", text="Scale")
         row = col.row(align=True)
         row.prop(self, "sd_key_adjust_center", text="Center")
-        row.prop(self, "sd_key_mirror_x", text="Mirror X")
-        row = col.row(align=True)
-        row.prop(self, "sd_key_mirror_y", text="Mirror Y")
-        row.prop(self, "sd_key_mirror_z", text="Mirror Z")
 
 
 classes = (

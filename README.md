@@ -20,6 +20,15 @@ A Blender addon that provides advanced mesh editing tools for enhanced modeling 
   - Fixed Flex tool not returning to Sculpt mode after completion/cancellation
   - Improved mode switching and restoration across all operators
 
+## What's New in v1.2.1
+
+- **Super Duplicate & Super Transform performance and UX**:
+  - Modal transforms now use object transforms for smoother interaction and bake to mesh on confirm
+  - Fixed transform center behavior for parented objects
+  - Added world axis constraints for move/rotate/scale (X/Y/Z)
+  - Mirror hotkeys are now Alt+X / Alt+Y / Alt+Z
+  - Super Duplicate / Super Transform invoke hotkeys now update immediately when changed in preferences
+
 ## What's New in v1.1.0
 
 - **Flex Tool Profile Symmetry Mode**: Draw symmetric custom profiles with the X key
@@ -88,9 +97,10 @@ A Blender addon that provides advanced mesh editing tools for enhanced modeling 
 4. Hold **R** to rotate around the white transform center, release to return to move
 5. Hold **S** to scale around the transform center, release to return to move
 6. Hold **Space** and drag to reposition the transform center
-7. Press **X**, **Y**, or **Z** to toggle mirror modifier on that axis
-8. Hold **Shift** for precision movement
-9. Left-click or press Enter to confirm, Right-click or Escape to cancel
+7. Press **X**, **Y**, or **Z** to constrain move/rotate/scale to that world axis
+8. Press **Alt+X**, **Alt+Y**, or **Alt+Z** to toggle mirror modifier on that axis
+9. Hold **Shift** for precision movement
+10. Left-click or press Enter to confirm, Right-click or Escape to cancel
 
 ### Super Orient
 1. Select one or more faces in Edit Mode
@@ -102,12 +112,18 @@ A Blender addon that provides advanced mesh editing tools for enhanced modeling 
 7. Left-click or press Enter to confirm the operation
 8. Right-click or press Escape to cancel the operation
 
-
 ## Requirements
 
-- Blender 4.3 or later
+- Blender 4.5 or later
 
 ## Changelog
+
+### v1.2.1
+- Improved Super Duplicate / Super Transform performance by using object transforms during the modal and baking results on confirm
+- Added X/Y/Z world axis constraints for move/rotate/scale
+- Changed mirror hotkeys to Alt+X / Alt+Y / Alt+Z
+- Fixed transform center behavior with parented objects
+- Super Duplicate / Super Transform invoke hotkeys now apply immediately when updated in addon preferences
 
 ### v1.2.0
 - Added Super Duplicate & Super Transform modal operators for sculpt objects
