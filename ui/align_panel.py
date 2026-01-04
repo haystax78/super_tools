@@ -77,6 +77,34 @@ class SUPERTOOLS_PT_modeling_panel(Panel):
         col.operator("mesh.super_orient_modal", text="Super Orient")
 
 
+class SUPERTOOLS_PT_sculpt_panel(Panel):
+    bl_label = "Sculpt"
+    bl_idname = "SUPERTOOLS_PT_sculpt_panel"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'Super Tools'
+    bl_parent_id = 'SUPERTOOLS_PT_main_panel'
+    bl_options = {'DEFAULT_CLOSED'}
+    bl_order = 1
+
+    def draw(self, context):
+        layout = self.layout
+        col = layout.column(align=True)
+        
+        # Flex button with dynamic label
+        active_obj = context.active_object
+        if active_obj and active_obj.select_get() and is_flex_mesh(active_obj):
+            col.operator("mesh.flex_create", text="ReFlex Mesh", icon="MESH_CAPSULE")
+        else:
+            col.operator("mesh.flex_create", text="Create Flex Mesh", icon="MESH_CAPSULE")
+        
+        col.separator()
+        op = col.operator("sculpt.super_duplicate", text="Super Duplicate")
+        op.duplicate = True
+        op = col.operator("sculpt.super_duplicate", text="Super Transform")
+        op.duplicate = False
+
+
 class SUPERTOOLS_PT_align_panel(Panel):
     bl_label = "Super Align"
     bl_idname = "SUPERTOOLS_PT_align_panel"
@@ -84,9 +112,8 @@ class SUPERTOOLS_PT_align_panel(Panel):
     bl_region_type = 'UI'
     bl_category = 'Super Tools'
     bl_parent_id = 'SUPERTOOLS_PT_main_panel'
-    # Default collapsed; and order after the main panel
     bl_options = {'DEFAULT_CLOSED'}
-    bl_order = 1
+    bl_order = 2
 
     def draw(self, context):
         layout = self.layout
@@ -124,7 +151,7 @@ class SUPERTOOLS_PT_utilities_panel(Panel):
     bl_category = 'Super Tools'
     bl_parent_id = 'SUPERTOOLS_PT_main_panel'
     bl_options = {'DEFAULT_CLOSED'}
-    bl_order = 2
+    bl_order = 3
 
     def draw(self, context):
         layout = self.layout
@@ -137,6 +164,7 @@ class SUPERTOOLS_PT_utilities_panel(Panel):
 def register():
     bpy.utils.register_class(SUPERTOOLS_PT_main_panel)
     bpy.utils.register_class(SUPERTOOLS_PT_modeling_panel)
+    bpy.utils.register_class(SUPERTOOLS_PT_sculpt_panel)
     bpy.utils.register_class(SUPERTOOLS_PT_align_panel)
     bpy.utils.register_class(SUPERTOOLS_PT_utilities_panel)
 
@@ -144,5 +172,6 @@ def register():
 def unregister():
     bpy.utils.unregister_class(SUPERTOOLS_PT_utilities_panel)
     bpy.utils.unregister_class(SUPERTOOLS_PT_align_panel)
+    bpy.utils.unregister_class(SUPERTOOLS_PT_sculpt_panel)
     bpy.utils.unregister_class(SUPERTOOLS_PT_modeling_panel)
     bpy.utils.unregister_class(SUPERTOOLS_PT_main_panel)

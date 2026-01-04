@@ -320,6 +320,87 @@ class SuperToolsPreferences(bpy.types.AddonPreferences):
         description="Require Shift modifier"
     )
 
+    # Super Duplicate Hotkey - configurable but not bound by default
+    super_duplicate_key: bpy.props.StringProperty(
+        name="Key",
+        default="",
+        description="Key for Super Duplicate (leave empty for no hotkey)"
+    )
+    super_duplicate_alt: bpy.props.BoolProperty(
+        name="Alt",
+        default=False,
+        description="Require Alt modifier"
+    )
+    super_duplicate_ctrl: bpy.props.BoolProperty(
+        name="Ctrl",
+        default=False,
+        description="Require Ctrl modifier"
+    )
+    super_duplicate_shift: bpy.props.BoolProperty(
+        name="Shift",
+        default=False,
+        description="Require Shift modifier"
+    )
+    
+    # Super Transform Hotkey
+    super_transform_key: bpy.props.StringProperty(
+        name="Key",
+        default="",
+        description="Key for Super Transform (leave empty for no hotkey)"
+    )
+    super_transform_alt: bpy.props.BoolProperty(
+        name="Alt",
+        default=False,
+        description="Require Alt modifier"
+    )
+    super_transform_ctrl: bpy.props.BoolProperty(
+        name="Ctrl",
+        default=False,
+        description="Require Ctrl modifier"
+    )
+    super_transform_shift: bpy.props.BoolProperty(
+        name="Shift",
+        default=False,
+        description="Require Shift modifier"
+    )
+    
+    # Super Duplicate Modal Keys
+    sd_key_move: bpy.props.StringProperty(
+        name="Move",
+        default="G",
+        description="Key for move mode"
+    )
+    sd_key_rotate: bpy.props.StringProperty(
+        name="Rotate",
+        default="R",
+        description="Key for rotate mode (hold)"
+    )
+    sd_key_scale: bpy.props.StringProperty(
+        name="Scale",
+        default="S",
+        description="Key for scale mode (hold)"
+    )
+    sd_key_adjust_center: bpy.props.StringProperty(
+        name="Adjust Center",
+        default="SPACE",
+        description="Key for adjusting transform center (hold)"
+    )
+    sd_key_mirror_x: bpy.props.StringProperty(
+        name="Mirror X",
+        default="X",
+        description="Key for toggling X mirror"
+    )
+    sd_key_mirror_y: bpy.props.StringProperty(
+        name="Mirror Y",
+        default="Y",
+        description="Key for toggling Y mirror"
+    )
+    sd_key_mirror_z: bpy.props.StringProperty(
+        name="Mirror Z",
+        default="Z",
+        description="Key for toggling Z mirror"
+    )
+
     def draw(self, context):
         layout = self.layout
         
@@ -373,6 +454,39 @@ class SuperToolsPreferences(bpy.types.AddonPreferences):
         row.prop(self, "flex_key_switch_mesh", text="")
         col.separator()
         col.operator("super_tools.restore_flex_hotkey_defaults", icon='LOOP_BACK')
+        
+        # Super Duplicate/Transform Hotkeys
+        box = layout.box()
+        box.label(text="Super Duplicate/Transform Hotkeys", icon='KEYINGSET')
+        col = box.column(align=True)
+        
+        col.label(text="Super Duplicate (leave key empty to disable):")
+        row = col.row(align=True)
+        row.prop(self, "super_duplicate_ctrl", toggle=True)
+        row.prop(self, "super_duplicate_alt", toggle=True)
+        row.prop(self, "super_duplicate_shift", toggle=True)
+        row.prop(self, "super_duplicate_key", text="")
+        
+        col.separator()
+        col.label(text="Super Transform (leave key empty to disable):")
+        row = col.row(align=True)
+        row.prop(self, "super_transform_ctrl", toggle=True)
+        row.prop(self, "super_transform_alt", toggle=True)
+        row.prop(self, "super_transform_shift", toggle=True)
+        row.prop(self, "super_transform_key", text="")
+        
+        col.separator()
+        col.label(text="Modal Keys:")
+        row = col.row(align=True)
+        row.prop(self, "sd_key_move", text="Move")
+        row.prop(self, "sd_key_rotate", text="Rotate")
+        row.prop(self, "sd_key_scale", text="Scale")
+        row = col.row(align=True)
+        row.prop(self, "sd_key_adjust_center", text="Center")
+        row.prop(self, "sd_key_mirror_x", text="Mirror X")
+        row = col.row(align=True)
+        row.prop(self, "sd_key_mirror_y", text="Mirror Y")
+        row.prop(self, "sd_key_mirror_z", text="Mirror Z")
 
 
 classes = (

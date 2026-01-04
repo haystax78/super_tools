@@ -976,6 +976,21 @@ def draw_callback_px(operator, context):
                 else:
                     radius_color = (0.7, 0.7, 0.7, 0.6)
                     line_width = 3.0
+
+                if is_hovering_radius:
+                    batch_radius_fill = batch_for_shader(
+                        shader_circle,
+                        'TRI_FAN',
+                        {"pos": radius_circle_verts},
+                    )
+                    gpu.state.blend_set('ALPHA')
+                    gpu.state.depth_test_set('NONE')
+                    shader_circle.bind()
+                    shader_circle.uniform_float(
+                        "color",
+                        (1.0, 0.5, 0.0, 0.1),
+                    )
+                    batch_radius_fill.draw(shader_circle)
                 
                 radius_vertices = []
                 for v in radius_circle_verts:

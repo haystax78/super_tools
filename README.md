@@ -2,6 +2,24 @@
 
 A Blender addon that provides advanced mesh editing tools for enhanced modeling workflows.
 
+## What's New in v1.2.0
+
+- **Super Duplicate & Super Transform**: New modal operators for transforming sculpt objects
+  - Duplicate or transform existing sculpt objects while preserving editability
+  - Visual transform center (white circle) that can be repositioned with Space key
+  - Modal hotkeys: Move (G), Rotate (R), Scale (S), Mirror axes (X/Y/Z)
+  - Sticky R/S keys: Hold to activate, release to return to move mode
+  - Flex mesh support: Transforms object instead of vertices to maintain editability
+  - Configurable hotkeys in addon preferences (invoke and modal keys)
+  - Mirror modifier support with "SD Mirror" modifier and "sd_mirror_empty" object
+- **Flex Tool Enhancements**:
+  - Available directly from Sculpt mode
+  - Automatically edits existing flex meshes when invoked from Sculpt mode
+  - Proper mode restoration (returns to Sculpt mode after operation)
+- **Bug fixes**:
+  - Fixed Flex tool not returning to Sculpt mode after completion/cancellation
+  - Improved mode switching and restoration across all operators
+
 ## What's New in v1.1.0
 
 - **Flex Tool Profile Symmetry Mode**: Draw symmetric custom profiles with the X key
@@ -63,6 +81,17 @@ A Blender addon that provides advanced mesh editing tools for enhanced modeling 
 3. Move your mouse to translate the extruded faces (they automatically rotate to face away from the selection center)
 4. Left-click or press Enter to confirm the operation
 
+### Super Duplicate & Super Transform
+1. In Sculpt mode, select a mesh object
+2. Use the configured hotkey (set in Preferences) or click "Super Duplicate"/"Super Transform" in the Super Tools > Sculpt panel
+3. **Move mode** (default): Drag to move the object
+4. Hold **R** to rotate around the white transform center, release to return to move
+5. Hold **S** to scale around the transform center, release to return to move
+6. Hold **Space** and drag to reposition the transform center
+7. Press **X**, **Y**, or **Z** to toggle mirror modifier on that axis
+8. Hold **Shift** for precision movement
+9. Left-click or press Enter to confirm, Right-click or Escape to cancel
+
 ### Super Orient
 1. Select one or more faces in Edit Mode
 2. Press `Alt+E` to open the extrude menu and select "Super Orient"
@@ -79,6 +108,13 @@ A Blender addon that provides advanced mesh editing tools for enhanced modeling 
 - Blender 4.3 or later
 
 ## Changelog
+
+### v1.2.0
+- Added Super Duplicate & Super Transform modal operators for sculpt objects
+- Implemented configurable hotkey system for invoke and modal keys
+- Added flex mesh support with object-level transformations
+- Fixed mode restoration for Flex tool in Sculpt mode
+- Added mirror modifier support with dedicated empty object
 
 ### v1.1.0
 - Flex Tool Profile Symmetry Mode improvements:

@@ -46,11 +46,10 @@ class MESH_OT_flex_create(FlexOperatorBase):
         self.original_mode = context.mode
 
         edit_target = None
-        if context.mode != 'SCULPT':
-            if context.active_object and context.active_object.select_get():
-                ao = context.active_object
-                if ("flex_curve_data" in ao) or ("sculpt_kit_curve_data" in ao) or ("sculpt_buddy_curve_data" in ao):
-                    edit_target = ao
+        if context.active_object and context.active_object.select_get():
+            ao = context.active_object
+            if ("flex_curve_data" in ao) or ("sculpt_kit_curve_data" in ao) or ("sculpt_buddy_curve_data" in ao):
+                edit_target = ao
 
         if edit_target is not None:
             return self._invoke_edit_mode(context, event, edit_target)
@@ -383,6 +382,16 @@ class MESH_OT_flex_create(FlexOperatorBase):
         
         state.cleanup()
         context.area.tag_redraw()
+        
+        # Restore original mode (Object or Sculpt)
+        if self.original_mode == 'SCULPT':
+            # Ensure we have an active mesh object before entering sculpt mode
+            obj = context.active_object
+            if obj and obj.type == 'MESH':
+                try:
+                    bpy.ops.object.mode_set(mode='SCULPT')
+                except RuntimeError:
+                    pass
     
     def _finalize(self, context, do_cleanup=True):
         """Finalize the flex mesh creation.
