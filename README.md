@@ -20,38 +20,6 @@ A Blender addon that provides advanced mesh editing tools for enhanced modeling 
   - Fixed Flex tool not returning to Sculpt mode after completion/cancellation
   - Improved mode switching and restoration across all operators
 
-## What's New in v1.2.1
-
-- **Super Duplicate & Super Transform performance and UX**:
-  - Modal transforms now use object transforms for smoother interaction and bake to mesh on confirm
-  - Fixed transform center behavior for parented objects
-  - Added world axis constraints for move/rotate/scale (X/Y/Z)
-  - Mirror hotkeys are now Alt+X / Alt+Y / Alt+Z
-  - Super Duplicate / Super Transform invoke hotkeys now update immediately when changed in preferences
-
-## What's New in v1.1.0
-
-- **Flex Tool Profile Symmetry Mode**: Draw symmetric custom profiles with the X key
-  - Symmetry state saved per profile slot and restored when editing
-  - Disabling symmetry realizes mirrored points as real editable points
-- **Profile Drawing Improvements**:
-  - Rotation disabled during profile drawing to prevent symmetry conflicts
-- **Bug fixes**:
-  - Prevent re-invoking flex_create while modal is already running
-  - Fixed points being unselectable if too close to the active point's radius boundary.
-
-## What's New in v1.0.0
-
-- **Flex Tool**: A powerful curve-based mesh creation tool for sculpting organic shapes like muscles, stylized hair, limbs and more.
-  - Draw control points to define a B-spline curve with adjustable radii
-  - Multiple profile types: Circular, Square, Rounded Square, and up to 6 custom drawable profiles
-  - Custom profile drawing mode with transform controls (Scale, Rotate, Move)
-  - Profile persistence across Blender sessions
-  - Hemisphere and planar end caps
-  - Mirror mode, adaptive segmentation, and twist controls
-  - Edit existing flex meshes with Alt+Q switching
-  - Configurable hotkeys and default settings in addon preferences
-
 ## Features
 
 - **Flex Tool**: Curve-based mesh creation for organic shapes with customizable profiles, caps, and real-time preview
@@ -117,6 +85,13 @@ A Blender addon that provides advanced mesh editing tools for enhanced modeling 
 - Blender 4.5 or later
 
 ## Changelog
+
+### v1.2.2
+- Super Duplicate / Super Transform hotkeys in addon preferences now reflect Blender's actual keymap entries (including shortcuts set via right-click > Assign Shortcut)
+- Super Duplicate modal: Improved feel of transformation during the modal with visual queues, cursor offsets and mouse region wrapping
+- Added cursor help for Super Duplicate / Super Transform modal
+- Added one-time migration from legacy preference hotkeys into the user keymap for better reliability
+- Super Duplicate modal: improved cursor warp synchronization when entering/exiting rotate/scale to reduce offset/jumps and prevent occasional unresponsive move input
 
 ### v1.2.1
 - Improved Super Duplicate / Super Transform performance by using object transforms during the modal and baking results on confirm

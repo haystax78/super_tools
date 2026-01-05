@@ -3,6 +3,37 @@ import bpy
 addon_keymaps = []
 
 
+def _get_keymap(kc, name, space_type='EMPTY'):
+    if not kc:
+        return None
+    km = kc.keymaps.get(name)
+    if km:
+        return km
+    return kc.keymaps.new(name=name, space_type=space_type)
+
+
+def _get_kmi_duplicate_value(kmi):
+    try:
+        return bool(kmi.properties.duplicate)
+    except Exception:
+        return None
+
+
+def find_super_duplicate_kmi(kc, duplicate_value, keymap_name='Sculpt'):
+    km = _get_keymap(kc, keymap_name)
+    if not km:
+        return None, None
+
+    for kmi in km.keymap_items:
+        if kmi.idname != 'sculpt.super_duplicate':
+            continue
+        if _get_kmi_duplicate_value(kmi) != duplicate_value:
+            continue
+        return km, kmi
+
+    return km, None
+
+
 def get_addon_prefs():
     """Get addon preferences."""
     addon = bpy.context.preferences.addons.get(__package__)
@@ -21,7 +52,11 @@ def draw_extrude_menu(self, context):
 
 
 def register_super_duplicate_keymaps():
-    """Register keymaps for Super Duplicate/Transform based on preferences."""
+    """Legacy: Register keymaps for Super Duplicate/Transform.
+
+    This is kept for backward compatibility but no longer drives the prefs UI.
+    Users can (and should) bind shortcuts via Blender's keymap system.
+    """
     global addon_keymaps
     
     # Unregister existing keymaps first
@@ -66,6 +101,68 @@ def register_super_duplicate_keymaps():
         addon_keymaps.append((km, kmi))
 
 
+def migrate_super_duplicate_hotkeys_from_prefs():
+    """One-time migration from legacy prefs hotkeys to user keymap."""
+    prefs = get_addon_prefs()
+    if not prefs:
+        return
+
+    if getattr(prefs, 'super_duplicate_keymap_migrated', False):
+        return
+
+    wm = bpy.context.window_manager
+    kc = wm.keyconfigs.user
+    if not kc:
+        return
+
+    def _migrate_one(
+        key,
+        ctrl,
+        alt,
+        shift,
+        duplicate_value,
+    ):
+        if not key:
+            return
+        km, existing_kmi = find_super_duplicate_kmi(
+            kc,
+            duplicate_value=duplicate_value,
+            keymap_name='Sculpt',
+        )
+        if existing_kmi:
+            return
+
+        if not km:
+            return
+
+        kmi = km.keymap_items.new(
+            'sculpt.super_duplicate',
+            type=key.upper(),
+            value='PRESS',
+            alt=alt,
+            ctrl=ctrl,
+            shift=shift,
+        )
+        kmi.properties.duplicate = duplicate_value
+
+    _migrate_one(
+        prefs.super_duplicate_key,
+        prefs.super_duplicate_ctrl,
+        prefs.super_duplicate_alt,
+        prefs.super_duplicate_shift,
+        True,
+    )
+    _migrate_one(
+        prefs.super_transform_key,
+        prefs.super_transform_ctrl,
+        prefs.super_transform_alt,
+        prefs.super_transform_shift,
+        False,
+    )
+
+    prefs.super_duplicate_keymap_migrated = True
+
+
 def unregister_super_duplicate_keymaps():
     """Unregister Super Duplicate/Transform keymaps."""
     global addon_keymaps
@@ -84,7 +181,7 @@ def register():
     
     # Register Super Duplicate/Transform keymaps
     # Use a timer to ensure preferences are available
-    bpy.app.timers.register(register_super_duplicate_keymaps, first_interval=0.1)
+    bpy.app.timers.register(migrate_super_duplicate_hotkeys_from_prefs, first_interval=0.1)
 
 
 def unregister():

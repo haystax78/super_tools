@@ -9,6 +9,8 @@ import json
 import base64
 from urllib import request, error
 
+import rna_keymap_ui
+
 
 REPO_RAW_INIT_URL = "https://raw.githubusercontent.com/haystax78/super_tools/main/super_tools/__init__.py"
 REPO_ZIP_URL = "https://codeload.github.com/haystax78/super_tools/zip/refs/heads/main"
@@ -216,13 +218,48 @@ class SUPERTOOLS_OT_restore_flex_hotkey_defaults(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class SUPERTOOLS_OT_add_super_duplicate_shortcut(bpy.types.Operator):
+    bl_idname = "super_tools.add_super_duplicate_shortcut"
+    bl_label = "Add Shortcut"
+    bl_description = "Create a keymap entry so it can be edited here"
+
+    duplicate: bpy.props.BoolProperty(default=True)
+
+    def execute(self, context):
+        try:
+            from . import keymaps
+        except Exception:
+            return {'CANCELLED'}
+
+        wm = context.window_manager
+        kc = wm.keyconfigs.user
+        if not kc:
+            return {'CANCELLED'}
+
+        km, existing_kmi = keymaps.find_super_duplicate_kmi(
+            kc,
+            duplicate_value=self.duplicate,
+            keymap_name='Sculpt',
+        )
+        if not km or existing_kmi:
+            return {'FINISHED'}
+
+        kmi = km.keymap_items.new(
+            'sculpt.super_duplicate',
+            type='NONE',
+            value='PRESS',
+        )
+        kmi.properties.duplicate = self.duplicate
+        return {'FINISHED'}
+
+
 class SuperToolsPreferences(bpy.types.AddonPreferences):
     bl_idname = __package__
 
     def _refresh_super_keymaps(self, context):
         try:
             from . import keymaps
-            keymaps.register_super_duplicate_keymaps()
+            keymaps.migrate_super_duplicate_hotkeys_from_prefs()
         except Exception:
             pass
 
@@ -332,25 +369,21 @@ class SuperToolsPreferences(bpy.types.AddonPreferences):
         name="Key",
         default="",
         description="Key for Super Duplicate (leave empty for no hotkey)",
-        update=lambda self, context: self._refresh_super_keymaps(context)
     )
     super_duplicate_alt: bpy.props.BoolProperty(
         name="Alt",
         default=False,
         description="Require Alt modifier",
-        update=lambda self, context: self._refresh_super_keymaps(context)
     )
     super_duplicate_ctrl: bpy.props.BoolProperty(
         name="Ctrl",
         default=False,
         description="Require Ctrl modifier",
-        update=lambda self, context: self._refresh_super_keymaps(context)
     )
     super_duplicate_shift: bpy.props.BoolProperty(
         name="Shift",
         default=False,
         description="Require Shift modifier",
-        update=lambda self, context: self._refresh_super_keymaps(context)
     )
     
     # Super Transform Hotkey
@@ -358,25 +391,26 @@ class SuperToolsPreferences(bpy.types.AddonPreferences):
         name="Key",
         default="",
         description="Key for Super Transform (leave empty for no hotkey)",
-        update=lambda self, context: self._refresh_super_keymaps(context)
     )
     super_transform_alt: bpy.props.BoolProperty(
         name="Alt",
         default=False,
         description="Require Alt modifier",
-        update=lambda self, context: self._refresh_super_keymaps(context)
     )
     super_transform_ctrl: bpy.props.BoolProperty(
         name="Ctrl",
         default=False,
         description="Require Ctrl modifier",
-        update=lambda self, context: self._refresh_super_keymaps(context)
     )
     super_transform_shift: bpy.props.BoolProperty(
         name="Shift",
         default=False,
         description="Require Shift modifier",
-        update=lambda self, context: self._refresh_super_keymaps(context)
+    )
+
+    super_duplicate_keymap_migrated: bpy.props.BoolProperty(
+        default=False,
+        options={'HIDDEN'}
     )
     
     # Super Duplicate Modal Keys
@@ -459,21 +493,55 @@ class SuperToolsPreferences(bpy.types.AddonPreferences):
         box = layout.box()
         box.label(text="Super Duplicate/Transform Hotkeys", icon='KEYINGSET')
         col = box.column(align=True)
-        
-        col.label(text="Super Duplicate (leave key empty to disable):")
-        row = col.row(align=True)
-        row.prop(self, "super_duplicate_ctrl", toggle=True)
-        row.prop(self, "super_duplicate_alt", toggle=True)
-        row.prop(self, "super_duplicate_shift", toggle=True)
-        row.prop(self, "super_duplicate_key", text="")
-        
-        col.separator()
-        col.label(text="Super Transform (leave key empty to disable):")
-        row = col.row(align=True)
-        row.prop(self, "super_transform_ctrl", toggle=True)
-        row.prop(self, "super_transform_alt", toggle=True)
-        row.prop(self, "super_transform_shift", toggle=True)
-        row.prop(self, "super_transform_key", text="")
+
+        wm = context.window_manager
+        kc = wm.keyconfigs.user
+        if not kc:
+            col.label(text="No user keyconfig available")
+        else:
+            try:
+                from . import keymaps
+            except Exception:
+                keymaps = None
+
+            def _draw_sd_kmi(label, duplicate_value):
+                sub = col.column(align=True)
+                sub.label(text=label)
+                if not keymaps:
+                    sub.label(text="Keymap unavailable")
+                    return
+
+                km, kmi = keymaps.find_super_duplicate_kmi(
+                    kc,
+                    duplicate_value=duplicate_value,
+                    keymap_name='Sculpt',
+                )
+                if not km:
+                    sub.label(text="Sculpt keymap not found")
+                    return
+                if not kmi:
+                    row = sub.row(align=True)
+                    op = row.operator(
+                        "super_tools.add_super_duplicate_shortcut",
+                        text="Add Shortcut",
+                        icon='ADD',
+                    )
+                    op.duplicate = duplicate_value
+                    sub.label(text="Tip: you can also right-click the UI button and choose Assign Shortcut")
+                    return
+
+                rna_keymap_ui.draw_kmi(
+                    [],
+                    kc,
+                    km,
+                    kmi,
+                    sub,
+                    0,
+                )
+
+            _draw_sd_kmi("Super Duplicate:", True)
+            col.separator()
+            _draw_sd_kmi("Super Transform:", False)
         
         col.separator()
         col.label(text="Modal Keys:")
@@ -489,6 +557,7 @@ classes = (
     SUPERTOOLS_OT_check_update,
     SUPERTOOLS_OT_perform_update,
     SUPERTOOLS_OT_restore_flex_hotkey_defaults,
+    SUPERTOOLS_OT_add_super_duplicate_shortcut,
     SuperToolsPreferences,
 )
 

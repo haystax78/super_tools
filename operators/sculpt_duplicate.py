@@ -1,5 +1,6 @@
 import bpy
 import gpu
+import blf
 import math
 import time
 from array import array
@@ -172,6 +173,10 @@ class SCULPT_OT_super_duplicate(bpy.types.Operator):
         self._mode = self.MODE_MOVE
         self._initial_mouse = Vector((event.mouse_region_x, event.mouse_region_y))
         self._constraint_axis = None
+        self._mouse_pos = Vector((event.mouse_region_x, event.mouse_region_y))
+        self._precision_active = bool(event.shift)
+        self._last_mouse = self._mouse_pos.copy()
+        self._mouse_accum = Vector((0.0, 0.0))
 
         # Transform center (in local space) - can be adjusted with Space
         self._transform_center_local = self._median_local.copy()
@@ -179,11 +184,36 @@ class SCULPT_OT_super_duplicate(bpy.types.Operator):
         self._pivot_world = self._current_matrix_world @ self._transform_center_local
         self._adjusting_center = False
         self._center_adjust_mouse = None
+        self._center_warped = False
+        self._pending_confirm = False
+        self._move_key_held = False
+        self._rotate_key_held = False
+        self._scale_key_held = False
+        self._post_confirm_block = False
+        self._warp_sync_pending = False
+        self._warp_sync_target = None
+        self._warp_sync_ignored = 0
+        self._warp_sync_time = 0.0
 
         # Setup draw handler for transform center visualization
         self._draw_handler = bpy.types.SpaceView3D.draw_handler_add(
             self._draw_transform_center, (context,), 'WINDOW', 'POST_VIEW'
         )
+
+        self._draw_handler_cursor_help = bpy.types.SpaceView3D.draw_handler_add(
+            self._draw_cursor_help, (context,), 'WINDOW', 'POST_PIXEL'
+        )
+
+        self._hud_help_visible = False
+
+        self._space_data = context.space_data
+        self._overlay_show_object_origins = None
+        try:
+            overlay = self._space_data.overlay
+            self._overlay_show_object_origins = overlay.show_object_origins
+            overlay.show_object_origins = False
+        except Exception:
+            self._overlay_show_object_origins = None
 
         # Profiling timer
         self._profile_timer = None
@@ -210,12 +240,128 @@ class SCULPT_OT_super_duplicate(bpy.types.Operator):
         self._key_mirror_y = 'Y'
         self._key_mirror_z = 'Z'
 
+        self._warp_cursor_to_transform_center(context)
+
         context.window_manager.modal_handler_add(self)
         context.area.tag_redraw()
 
         mode_text = "Duplicate" if self.duplicate else "Transform"
         self.report({'INFO'}, f"{mode_text}: {self._key_move} | {self._key_rotate}/{self._key_scale} (hold) | X/Y/Z: Axis Constraint | Alt+X/Y/Z: Mirror | {self._key_center}: Adjust Center | Shift: Precision")
         return {'RUNNING_MODAL'}
+
+    def _finish_confirm(self):
+        self._pending_confirm = False
+        if not self._is_flex_mesh:
+            self._bake_object_transform_to_mesh()
+
+        self._cleanup_drawing()
+        bpy.ops.ed.undo_push(message="Super Duplicate")
+        self._restore_mode()
+
+    def _wrap_cursor_if_needed(self, context, event):
+        if self._adjusting_center:
+            return False
+
+        if self._mode != self.MODE_MOVE:
+            return False
+
+        region = self._region
+        if region is None:
+            return False
+
+        width = int(region.width)
+        height = int(region.height)
+
+        min_x = int(width * 0.15)
+        max_x = max(min_x + 1, int(width * 0.85) - 1)
+        min_y = int(height * 0.15)
+        max_y = max(min_y + 1, int(height * 0.85) - 1)
+
+        edge_margin = 5
+
+        x = int(event.mouse_region_x)
+        y = int(event.mouse_region_y)
+
+        target_x = None
+        target_y = None
+
+        if x <= min_x + edge_margin:
+            target_x = max_x - edge_margin
+        elif x >= max_x - edge_margin:
+            target_x = min_x + edge_margin
+
+        if y <= min_y + edge_margin:
+            target_y = max_y - edge_margin
+        elif y >= max_y - edge_margin:
+            target_y = min_y + edge_margin
+
+        if target_x is None and target_y is None:
+            return False
+
+        if target_x is None:
+            target_x = x
+        if target_y is None:
+            target_y = y
+
+        warp_x = int(region.x + target_x)
+        warp_y = int(region.y + target_y)
+        try:
+            context.window.cursor_warp(warp_x, warp_y)
+        except Exception:
+            return False
+
+        new_mouse = Vector((float(target_x), float(target_y)))
+        self._mouse_pos = new_mouse.copy()
+        self._last_mouse = new_mouse.copy()
+        return True
+
+    def _reset_mouse_accum_pos(self, mouse_pos):
+        self._mouse_pos = mouse_pos.copy()
+        self._last_mouse = self._mouse_pos.copy()
+        self._mouse_accum = Vector((0.0, 0.0))
+
+    def _reset_mouse_accum(self, event):
+        self._mouse_pos = Vector((event.mouse_region_x, event.mouse_region_y))
+        self._last_mouse = self._mouse_pos.copy()
+        self._mouse_accum = Vector((0.0, 0.0))
+
+    def _warp_cursor_to_transform_center(
+        self,
+        context,
+        offset_x=0.0,
+        offset_y=0.0,
+    ):
+        center_world = self._new_obj.matrix_world @ self._transform_center_local
+        center_2d = view3d_utils.location_3d_to_region_2d(
+            self._region, self._rv3d, center_world
+        )
+        if center_2d is None:
+            return False
+
+        region = self._region
+        target_x = float(center_2d.x) + float(offset_x)
+        target_y = float(center_2d.y) + float(offset_y)
+
+        if region is not None:
+            margin = 2.0
+            target_x = max(margin, min(target_x, float(region.width) - margin))
+            target_y = max(margin, min(target_y, float(region.height) - margin))
+
+        warp_x = int(round(self._region.x + target_x))
+        warp_y = int(round(self._region.y + target_y))
+        try:
+            context.window.cursor_warp(warp_x, warp_y)
+        except Exception:
+            return False
+
+        new_mouse = Vector((target_x, target_y))
+        self._reset_mouse_accum_pos(new_mouse)
+        self._initial_mouse = new_mouse.copy()
+        self._warp_sync_pending = True
+        self._warp_sync_target = new_mouse.copy()
+        self._warp_sync_ignored = 0
+        self._warp_sync_time = time.perf_counter()
+        return True
 
     def modal(self, context, event):
         global _profile_counts, _profile_frame
@@ -226,6 +372,22 @@ class SCULPT_OT_super_duplicate(bpy.types.Operator):
             _profile_frame = 0
             print("[PROFILE] Profiling started - move mouse to see stats")
 
+        if getattr(self, '_post_confirm_block', False):
+            if event.type == self._key_move and event.value == 'RELEASE':
+                self._move_key_held = False
+            elif event.type == self._key_rotate and event.value == 'RELEASE':
+                self._rotate_key_held = False
+            elif event.type == self._key_scale and event.value == 'RELEASE':
+                self._scale_key_held = False
+
+            if not (
+                self._move_key_held
+                or self._rotate_key_held
+                or self._scale_key_held
+            ):
+                return {'FINISHED'}
+            return {'RUNNING_MODAL'}
+
         if PROFILE_ENABLED and event.type == 'TIMER':
             profile_report_timer()
             return {'RUNNING_MODAL'}
@@ -233,21 +395,89 @@ class SCULPT_OT_super_duplicate(bpy.types.Operator):
         # Handle adjust center key
         if event.type == self._key_center:
             if event.value == 'PRESS':
+                self._center_warped = self._warp_cursor_to_transform_center(
+                    context
+                )
+                if self._center_warped:
+                    self._center_adjust_mouse = self._mouse_pos.copy()
+
                 self._adjusting_center = True
-                self._center_adjust_mouse = Vector((event.mouse_region_x, event.mouse_region_y))
+                if not self._center_warped:
+                    self._center_adjust_mouse = Vector(
+                        (event.mouse_region_x, event.mouse_region_y)
+                    )
                 context.area.tag_redraw()
                 return {'RUNNING_MODAL'}
             elif event.value == 'RELEASE':
                 self._adjusting_center = False
+                self._center_warped = False
                 # Commit current transform so subsequent operations don't jump
                 self._commit_current_transform()
                 # Reset initial mouse for current transform mode
                 self._initial_mouse = Vector((event.mouse_region_x, event.mouse_region_y))
+                self._reset_mouse_accum(event)
                 context.area.tag_redraw()
                 return {'RUNNING_MODAL'}
 
+        if self._adjusting_center and event.type in {
+            'LEFTMOUSE',
+            'RET',
+            'NUMPAD_ENTER',
+        }:
+            return {'RUNNING_MODAL'}
+
         if event.type == 'MOUSEMOVE':
             profile_report()
+            self._mouse_pos = Vector((event.mouse_region_x, event.mouse_region_y))
+
+            if getattr(self, '_warp_sync_pending', False):
+                target = getattr(self, '_warp_sync_target', None)
+                if target is not None:
+                    if (self._mouse_pos - target).length > 4.0:
+                        self._warp_sync_ignored = (
+                            getattr(self, '_warp_sync_ignored', 0) + 1
+                        )
+                        max_ignored = 8
+                        timeout_s = 0.15
+                        start_t = getattr(self, '_warp_sync_time', 0.0)
+                        if (
+                            self._warp_sync_ignored < max_ignored
+                            and (time.perf_counter() - start_t) < timeout_s
+                        ):
+                            return {'RUNNING_MODAL'}
+
+                self._warp_sync_pending = False
+                self._warp_sync_target = None
+                self._warp_sync_ignored = 0
+                self._warp_sync_time = 0.0
+                self._last_mouse = self._mouse_pos.copy()
+                self._mouse_accum = Vector((0.0, 0.0))
+                context.area.tag_redraw()
+                return {'RUNNING_MODAL'}
+
+            if not self._adjusting_center and self._mode == self.MODE_MOVE:
+                raw_delta = self._mouse_pos - getattr(self, '_last_mouse', self._mouse_pos)
+                self._mouse_accum = getattr(self, '_mouse_accum', Vector((0.0, 0.0))) + raw_delta
+                self._last_mouse = self._mouse_pos.copy()
+
+            if self._wrap_cursor_if_needed(context, event):
+                context.area.tag_redraw()
+                return {'RUNNING_MODAL'}
+
+            current_shift = bool(event.shift)
+            if current_shift != getattr(self, '_precision_active', False):
+                if self._adjusting_center:
+                    self._center_adjust_mouse = Vector(
+                        (event.mouse_region_x, event.mouse_region_y)
+                    )
+                else:
+                    self._commit_current_transform()
+                    self._initial_mouse = Vector(
+                        (event.mouse_region_x, event.mouse_region_y)
+                    )
+                    self._reset_mouse_accum(event)
+                self._precision_active = current_shift
+
             if self._adjusting_center:
                 self._update_transform_center(context, event)
             else:
@@ -263,54 +493,122 @@ class SCULPT_OT_super_duplicate(bpy.types.Operator):
                 self.report({'INFO'}, f"Axis Constraint: {event.type}")
             return {'RUNNING_MODAL'}
 
+        elif event.type == 'H' and event.value == 'PRESS':
+            self._hud_help_visible = not getattr(self, '_hud_help_visible', False)
+            status = "ON" if self._hud_help_visible else "OFF"
+            self.report({'INFO'}, f"HUD Help: {status}")
+            context.area.tag_redraw()
+            return {'RUNNING_MODAL'}
+
         elif event.type == self._key_move and event.value == 'PRESS':
+            if getattr(event, 'is_repeat', False):
+                return {'RUNNING_MODAL'}
+            self._move_key_held = True
             self._commit_current_transform()
             self._mode = self.MODE_MOVE
             self._initial_mouse = Vector((event.mouse_region_x, event.mouse_region_y))
+            self._reset_mouse_accum(event)
             self._transform_center_initial = self._transform_center_local.copy()
             self.report({'INFO'}, "Move mode")
             return {'RUNNING_MODAL'}
 
+        elif event.type == self._key_move and event.value == 'RELEASE':
+            self._move_key_held = False
+            return {'RUNNING_MODAL'}
+
         elif event.type == self._key_rotate:
             if event.value == 'PRESS':
+                if getattr(event, 'is_repeat', False):
+                    return {'RUNNING_MODAL'}
+                if self._mode == self.MODE_ROTATE:
+                    return {'RUNNING_MODAL'}
+                self._rotate_key_held = True
                 self._commit_current_transform()
                 self._mode = self.MODE_ROTATE
-                self._initial_mouse = Vector((event.mouse_region_x, event.mouse_region_y))
+                region = self._region
+                if region is not None:
+                    offset_x = float(region.width) / 16.0
+                    offset_y = -float(region.height) / 16.0
+                else:
+                    offset_x = 0.0
+                    offset_y = 0.0
+
+                if not self._warp_cursor_to_transform_center(
+                    context, offset_x=offset_x, offset_y=offset_y
+                ):
+                    self._initial_mouse = Vector(
+                        (event.mouse_region_x, event.mouse_region_y)
+                    )
+                    self._reset_mouse_accum(event)
                 self._transform_center_initial = self._transform_center_local.copy()
                 self.report({'INFO'}, "Rotate mode (hold)")
                 return {'RUNNING_MODAL'}
             elif event.value == 'RELEASE':
+                self._rotate_key_held = False
                 self._commit_current_transform()
+                if not self._warp_cursor_to_transform_center(context):
+                    self._initial_mouse = Vector(
+                        (event.mouse_region_x, event.mouse_region_y)
+                    )
+                    self._reset_mouse_accum(event)
+
                 self._mode = self.MODE_MOVE
-                self._initial_mouse = Vector((event.mouse_region_x, event.mouse_region_y))
                 self.report({'INFO'}, "Move mode")
                 return {'RUNNING_MODAL'}
 
         elif event.type == self._key_scale:
             if event.value == 'PRESS':
+                if getattr(event, 'is_repeat', False):
+                    return {'RUNNING_MODAL'}
+                if self._mode == self.MODE_SCALE:
+                    return {'RUNNING_MODAL'}
+                self._scale_key_held = True
                 self._commit_current_transform()
                 self._mode = self.MODE_SCALE
-                self._initial_mouse = Vector((event.mouse_region_x, event.mouse_region_y))
+                region = self._region
+                if region is not None:
+                    offset_x = float(region.width) / 16.0
+                    offset_y = -float(region.height) / 16.0
+                else:
+                    offset_x = 0.0
+                    offset_y = 0.0
+
+                if not self._warp_cursor_to_transform_center(
+                    context, offset_x=offset_x, offset_y=offset_y
+                ):
+                    self._initial_mouse = Vector(
+                        (event.mouse_region_x, event.mouse_region_y)
+                    )
+                    self._reset_mouse_accum(event)
                 self._transform_center_initial = self._transform_center_local.copy()
                 self.report({'INFO'}, "Scale mode (hold)")
                 return {'RUNNING_MODAL'}
             elif event.value == 'RELEASE':
+                self._scale_key_held = False
                 self._commit_current_transform()
+                if not self._warp_cursor_to_transform_center(context):
+                    self._initial_mouse = Vector(
+                        (event.mouse_region_x, event.mouse_region_y)
+                    )
+                    self._reset_mouse_accum(event)
+
                 self._mode = self.MODE_MOVE
-                self._initial_mouse = Vector((event.mouse_region_x, event.mouse_region_y))
                 self.report({'INFO'}, "Move mode")
                 return {'RUNNING_MODAL'}
 
         elif event.type in {'LEFTMOUSE', 'RET', 'NUMPAD_ENTER'} and event.value == 'PRESS':
-            if not self._is_flex_mesh:
-                self._bake_object_transform_to_mesh()
-
-            self._cleanup_drawing()
-            bpy.ops.ed.undo_push(message="Super Duplicate")
-            self._restore_mode()
-
+            self._finish_confirm()
             mode_text = "Super Duplicate" if self.duplicate else "Super Transform"
             self.report({'INFO'}, f"{mode_text} confirmed")
+
+            if event.type == 'LEFTMOUSE' and (
+                self._move_key_held
+                or self._rotate_key_held
+                or self._scale_key_held
+            ):
+                self._post_confirm_block = True
+                return {'RUNNING_MODAL'}
+
             return {'FINISHED'}
 
         elif event.type in {'RIGHTMOUSE', 'ESC'} and event.value == 'PRESS':
@@ -524,6 +822,175 @@ class SCULPT_OT_super_duplicate(bpy.types.Operator):
         gpu.state.blend_set('NONE')
         profile_end('draw_handler')
 
+    def _draw_cursor_help(self, context):
+        if not hasattr(self, '_mouse_pos'):
+            return
+
+        mx = float(self._mouse_pos.x)
+        my = float(self._mouse_pos.y)
+
+        if self._mode in {self.MODE_ROTATE, self.MODE_SCALE}:
+            try:
+                center_world = (
+                    self._new_obj.matrix_world @ self._transform_center_local
+                )
+                center_2d = view3d_utils.location_3d_to_region_2d(
+                    self._region, self._rv3d, center_world
+                )
+                if center_2d is not None:
+                    x0, y0 = float(center_2d.x), float(center_2d.y)
+                    x1, y1 = mx, my
+                    dx = x1 - x0
+                    dy = y1 - y0
+                    dist = math.hypot(dx, dy)
+                    if dist > 1.0:
+                        ux = dx / dist
+                        uy = dy / dist
+                        dash_length = 12.0
+                        gap_length = 8.0
+                        line_vertices = []
+                        pos = 0.0
+                        while pos < dist:
+                            seg_start = pos
+                            seg_end = min(pos + dash_length, dist)
+                            sx = x0 + ux * seg_start
+                            sy = y0 + uy * seg_start
+                            ex = x0 + ux * seg_end
+                            ey = y0 + uy * seg_end
+                            line_vertices.append(
+                                (sx, sy, 0.0, 1.0, 0.0, 0.0, 0.5)
+                            )
+                            line_vertices.append(
+                                (ex, ey, 0.0, 1.0, 0.0, 0.0, 0.5)
+                            )
+                            pos += dash_length + gap_length
+                        if line_vertices:
+                            shader_line = gpu.shader.from_builtin(
+                                'POLYLINE_SMOOTH_COLOR'
+                            )
+                            batch_dashed = batch_for_shader(
+                                shader_line,
+                                'LINES',
+                                {
+                                    "pos": [v[0:3] for v in line_vertices],
+                                    "color": [v[3:7] for v in line_vertices],
+                                },
+                            )
+                            gpu.state.blend_set('ALPHA')
+                            gpu.state.depth_test_set('NONE')
+                            shader_line.bind()
+                            shader_line.uniform_float("lineWidth", 2.0)
+                            shader_line.uniform_float(
+                                "viewportSize",
+                                (
+                                    bpy.context.region.width,
+                                    bpy.context.region.height,
+                                ),
+                            )
+                            batch_dashed.draw(shader_line)
+            except Exception:
+                pass
+
+        offset_x = 20
+        offset_y = 50
+        line_height = 20
+        font_size = 16
+
+        hud_visible = bool(getattr(self, '_hud_help_visible', False))
+        hud_status = 'Hide' if hud_visible else 'Show'
+
+        if self._adjusting_center:
+            mode_text = "Mode: Adjust Center"
+            mode_color = (0.2, 0.8, 1.0)
+        else:
+            if self._mode == self.MODE_MOVE:
+                mode_label = 'Move'
+            elif self._mode == self.MODE_ROTATE:
+                mode_label = 'Rotate'
+            else:
+                mode_label = 'Scale'
+            mode_text = f"Mode: {mode_label}"
+            mode_color = (0.9, 0.9, 0.9)
+
+        slots = [
+            {
+                'id': 'active_mode',
+                'text': mode_text,
+                'color': mode_color,
+            },
+            {
+                'id': 'hud_toggle',
+                'text': f"{hud_status} Help [H]",
+                'color': (0.7, 0.7, 0.7),
+            },
+        ]
+
+        if hud_visible:
+            if self._adjusting_center:
+                slots.extend(
+                    [
+                        {
+                            'id': 'center_move',
+                            'text': 'Move Mouse: Reposition Center',
+                            'color': (0.6, 0.9, 1.0),
+                        },
+                        {
+                            'id': 'center_release',
+                            'text': 'Release: Commit Center',
+                            'color': (0.6, 0.9, 1.0),
+                        },
+                    ]
+                )
+            else:
+                slots.extend(
+                    [
+                        {
+                            'id': 'basic_input',
+                            'text': 'LMB/Enter: Confirm  RMB/Esc: Cancel',
+                            'color': (0.9, 0.9, 0.9),
+                        },
+                        {
+                            'id': 'center_key',
+                            'text': f"{self._key_center}: Adjust Center (hold)",
+                            'color': (0.85, 0.85, 0.85),
+                        },
+                        {
+                            'id': 'axis',
+                            'text': 'X/Y/Z: Axis Constraint',
+                            'color': (0.8, 0.8, 0.3),
+                        },
+                        {
+                            'id': 'mirror',
+                            'text': 'Alt+X/Y/Z: Mirror',
+                            'color': (0.2, 0.8, 1.0),
+                        },
+                        {
+                            'id': 'precision',
+                            'text': 'Shift: Precision',
+                            'color': (0.7, 0.7, 0.7),
+                        },
+                    ]
+                )
+
+        font_id = 0
+        try:
+            visible_index = 0
+            for slot in slots:
+                r, g, b = slot['color']
+                blf.color(font_id, r, g, b, 1.0)
+
+                if slot['id'] == 'active_mode':
+                    blf.size(font_id, int(font_size * 1.4))
+                else:
+                    blf.size(font_id, font_size)
+
+                y_pos = my - offset_y - (visible_index * line_height)
+                blf.position(font_id, mx + offset_x, y_pos, 0)
+                blf.draw(font_id, slot['text'])
+                visible_index += 1
+        except Exception:
+            pass
+
     def _update_transform_center(self, context, event):
         """Update transform center position based on mouse movement."""
         current_mouse = Vector((event.mouse_region_x, event.mouse_region_y))
@@ -558,12 +1025,34 @@ class SCULPT_OT_super_duplicate(bpy.types.Operator):
             bpy.types.SpaceView3D.draw_handler_remove(self._draw_handler, 'WINDOW')
             self._draw_handler = None
 
+        if (
+            hasattr(self, '_draw_handler_cursor_help')
+            and self._draw_handler_cursor_help
+        ):
+            bpy.types.SpaceView3D.draw_handler_remove(
+                self._draw_handler_cursor_help,
+                'WINDOW',
+            )
+            self._draw_handler_cursor_help = None
+
         if hasattr(self, '_profile_timer') and self._profile_timer:
             try:
                 bpy.context.window_manager.event_timer_remove(self._profile_timer)
             except Exception:
                 pass
             self._profile_timer = None
+
+        if getattr(self, '_overlay_show_object_origins', None) is not None:
+            try:
+                space_data = getattr(self, '_space_data', None)
+                if space_data is not None and getattr(space_data, 'type', None) == 'VIEW_3D':
+                    space_data.overlay.show_object_origins = (
+                        self._overlay_show_object_origins
+                    )
+            except Exception:
+                pass
+            self._overlay_show_object_origins = None
+            self._space_data = None
 
     def _toggle_mirror_axis(self, axis):
         """Toggle mirror modifier on specified axis (X, Y, or Z)."""
@@ -618,11 +1107,17 @@ class SCULPT_OT_super_duplicate(bpy.types.Operator):
     def _update_move(self, context, event):
         """Move geometry in screen space."""
         profile_start('move_total')
-        current_mouse = Vector((event.mouse_region_x, event.mouse_region_y))
-        mouse_delta = current_mouse - self._initial_mouse
+        if self._mode == self.MODE_MOVE:
+            mouse_delta = getattr(self, '_mouse_accum', Vector((0.0, 0.0))).copy()
 
-        if event.shift:
-            mouse_delta *= PRECISION_FACTOR
+            if event.shift:
+                mouse_delta *= PRECISION_FACTOR
+        else:
+            current_mouse = Vector((event.mouse_region_x, event.mouse_region_y))
+            mouse_delta = current_mouse - self._initial_mouse
+
+            if event.shift:
+                mouse_delta *= PRECISION_FACTOR
 
         obj_world = self._new_obj.matrix_world.translation
         obj_2d = view3d_utils.location_3d_to_region_2d(
@@ -655,7 +1150,7 @@ class SCULPT_OT_super_duplicate(bpy.types.Operator):
 
     def _update_rotate(self, context, event):
         """Rotate geometry around transform center."""
-        current_mouse = Vector((event.mouse_region_x, event.mouse_region_y))
+        current_mouse = self._mouse_pos.copy()
 
         center_2d = view3d_utils.location_3d_to_region_2d(
             self._region, self._rv3d, self._pivot_world
@@ -696,7 +1191,7 @@ class SCULPT_OT_super_duplicate(bpy.types.Operator):
 
     def _update_scale(self, context, event):
         """Scale geometry around transform center."""
-        current_mouse = Vector((event.mouse_region_x, event.mouse_region_y))
+        current_mouse = self._mouse_pos.copy()
         center_2d = view3d_utils.location_3d_to_region_2d(
             self._region, self._rv3d, self._pivot_world
         )
