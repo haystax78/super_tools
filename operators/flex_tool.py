@@ -101,6 +101,50 @@ class MESH_OT_flex_create(FlexOperatorBase):
         context.area.tag_redraw()
         context.window_manager.modal_handler_add(self)
         return {'RUNNING_MODAL'}
+
+    def _clear_parent_keep_transform(self, obj):
+        """Clear parent while preserving world transform."""
+        obj_world = obj.matrix_world.copy()
+        obj.parent = None
+        try:
+            obj.parent_type = 'OBJECT'
+        except TypeError:
+            pass
+        obj.parent_bone = ""
+        obj.matrix_parent_inverse = Matrix.Identity(4)
+        obj.matrix_world = obj_world
+
+    def _restore_child_parent(self, child, parent, child_data):
+        """Restore child parenting and transforms from saved data."""
+        child.parent = parent
+        parent_type = child_data.get('parent_type', 'OBJECT')
+        parent_bone = child_data.get('parent_bone', '')
+        try:
+            child.parent_type = parent_type
+        except TypeError:
+            pass
+        if parent_type == 'BONE':
+            child.parent_bone = parent_bone
+        child.matrix_parent_inverse = child_data.get(
+            'matrix_parent_inverse', Matrix.Identity(4)
+        ).copy()
+        child.matrix_world = child_data.get(
+            'matrix_world', child.matrix_world
+        ).copy()
+
+    def _parent_keep_transform(self, child, parent):
+        """Parent child to parent while preserving world transform."""
+        child_world = child.matrix_world.copy()
+        child.parent = parent
+        try:
+            child.parent_type = 'OBJECT'
+        except TypeError:
+            pass
+        child.parent_bone = ""
+        child.matrix_parent_inverse = (
+            parent.matrix_world.inverted_safe() @ child_world
+        )
+        child.matrix_world = child_world
     
     def _invoke_edit_mode(self, context, event, edit_target):
         """Initialize for editing an existing flex mesh"""
@@ -169,10 +213,7 @@ class MESH_OT_flex_create(FlexOperatorBase):
         for child_data in self._original_children:
             child = bpy.data.objects.get(child_data['name'])
             if child:
-                bpy.ops.object.select_all(action='DESELECT')
-                child.select_set(True)
-                context.view_layer.objects.active = child
-                bpy.ops.object.parent_clear(type='CLEAR_KEEP_TRANSFORM')
+                self._clear_parent_keep_transform(child)
 
         curve_data_json = None
         for key in ("flex_curve_data", "sculpt_kit_curve_data", "sculpt_buddy_curve_data"):
@@ -359,11 +400,11 @@ class MESH_OT_flex_create(FlexOperatorBase):
                 for child_data in original_children:
                     child = bpy.data.objects.get(child_data['name'])
                     if child:
-                        bpy.ops.object.select_all(action='DESELECT')
-                        child.select_set(True)
-                        orig_obj.select_set(True)
-                        context.view_layer.objects.active = orig_obj
-                        bpy.ops.object.parent_set(type='OBJECT', keep_transform=False)
+                        self._restore_child_parent(
+                            child,
+                            orig_obj,
+                            child_data,
+                        )
             elif not getattr(self, '_edit_cancelled', False) and not getattr(self, '_edit_completed', False):
                 # Delete the original object after successful finalization
                 try:
@@ -662,11 +703,7 @@ class MESH_OT_flex_create(FlexOperatorBase):
             for child_data in original_children:
                 child = bpy.data.objects.get(child_data['name'])
                 if child:
-                    bpy.ops.object.select_all(action='DESELECT')
-                    child.select_set(True)
-                    final_obj.select_set(True)
-                    context.view_layer.objects.active = final_obj
-                    bpy.ops.object.parent_set(type='OBJECT', keep_transform=False)
+                    self._parent_keep_transform(child, final_obj)
         
         if do_cleanup:
             self._cleanup(context)

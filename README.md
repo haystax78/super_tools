@@ -86,6 +86,12 @@ A Blender addon that provides advanced mesh editing tools for enhanced modeling 
 
 ## Changelog
 
+### v1.2.3
+- Flex Tool: preserve custom profile slots when switching targets with
+  Alt+Q
+- Flex Tool: use context-safe parenting operations when switching or
+  editing existing flex meshes to avoid selection poll errors
+
 ### v1.2.2
 - Super Duplicate / Super Transform hotkeys in addon preferences now reflect Blender's actual keymap entries (including shortcuts set via right-click > Assign Shortcut)
 - Super Duplicate modal: Improved feel of transformation during the modal with visual queues, cursor offsets and mouse region wrapping

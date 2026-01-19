@@ -6,10 +6,10 @@ import bpy
 import time
 import math
 import json
-from mathutils import Vector
+from mathutils import Vector, Matrix
 from bpy_extras import view3d_utils
 
-from ..utils.flex_state import state, save_custom_profiles_to_scene
+from ..utils.flex_state import state, save_custom_profiles_to_scene, load_custom_profiles_from_scene
 from ..utils import flex_conversion as conversion
 from ..utils import flex_math as math_utils
 from ..utils import flex_mesh as mesh_utils
@@ -1620,6 +1620,7 @@ def switch_target_flex(operator, context, event):
 
     # Initialize state for editing the new target flex
     state.initialize()
+    load_custom_profiles_from_scene()
     state.is_running = True
 
     state.object_matrix_world = flex_obj.matrix_world.copy()
@@ -1709,14 +1710,19 @@ def switch_target_flex(operator, context, event):
             'matrix_parent_inverse': child.matrix_parent_inverse.copy(),
         })
     
-    # Unparent children using CLEAR_KEEP_TRANSFORM
+    # Unparent children using data-API to avoid context issues
     for child_data in operator._original_children:
         child = bpy.data.objects.get(child_data['name'])
         if child:
-            bpy.ops.object.select_all(action='DESELECT')
-            child.select_set(True)
-            context.view_layer.objects.active = child
-            bpy.ops.object.parent_clear(type='CLEAR_KEEP_TRANSFORM')
+            child_world = child.matrix_world.copy()
+            child.parent = None
+            try:
+                child.parent_type = 'OBJECT'
+            except TypeError:
+                pass
+            child.parent_bone = ""
+            child.matrix_parent_inverse = Matrix.Identity(4)
+            child.matrix_world = child_world
 
     # Load curve data from the flex object
     if not curve_data_json:
