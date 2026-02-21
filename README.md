@@ -86,6 +86,19 @@ A Blender addon that provides advanced mesh editing tools for enhanced modeling 
 
 ## Changelog
 
+### v1.2.4
+- Added Super Orient "Connected Only" support.
+- Fixed delays caused by stacked radius adjustments during Super Orient
+  when proportional mode was enabled.
+- Added draw mode to Super Extrude.
+- Fixed orientation centers being incorrectly calculated from selection
+  center instead of selection border.
+- Added cursor UI help to Super Extrude and Super Orient exposing modal
+  hotkeys. Use `H` to toggle help visibility; help defaults to hidden to
+  match behavior, presentation, and formatting used in Flex,
+  Super Duplicate, and Super Transform tools.
+- Added edge mode to Super Extrude.
+
 ### v1.2.3
 - Flex Tool: preserve custom profile slots when switching targets with
   Alt+Q

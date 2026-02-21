@@ -1,6 +1,9 @@
 import bpy
 import bmesh
 import mathutils
+import blf
+import heapq
+import time
 from mathutils import Vector
 from mathutils.kdtree import KDTree
 from math import radians
@@ -53,8 +56,110 @@ class MESH_OT_super_orient_modal(bpy.types.Operator):
         bmesh.update_edit_mesh(obj.data)
 
     def update_hud(self, context):
-        # HUD disabled for now
-        return
+        if context.area is not None:
+            context.area.tag_redraw()
+
+    def _remove_cursor_help_handler(self):
+        """Remove cursor-help draw handler if present."""
+        handler = getattr(self, '_cursor_help_draw_handler', None)
+        if handler is not None:
+            bpy.types.SpaceView3D.draw_handler_remove(handler, 'WINDOW')
+            self._cursor_help_draw_handler = None
+
+    def _get_cursor_help_slots(self):
+        """Return cursor-help lines for Super Orient."""
+        hud_visible = bool(getattr(self, '_hud_help_visible', False))
+        hud_status = 'Hide' if hud_visible else 'Show'
+        slots = [
+            {
+                'id': 'active_mode',
+                'text': 'Mode: Super Orient',
+                'color': (0.9, 0.9, 0.9),
+            },
+            {
+                'id': 'hud_toggle',
+                'text': f"{hud_status} Help [H]",
+                'color': (0.7, 0.7, 0.7),
+            },
+        ]
+        if not hud_visible:
+            return slots
+
+        slots.extend([
+            {
+                'id': 'confirm_cancel',
+                'text': 'LMB/Enter: Confirm  RMB/Esc: Cancel',
+                'color': (0.9, 0.9, 0.9),
+            },
+            {
+                'id': 'constraints',
+                'text': 'X/Y/Z: Axis Constraint',
+                'color': (0.2, 0.8, 1.0),
+            },
+            {
+                'id': 'precision',
+                'text': 'Shift: Precision / Twist Wheel',
+                'color': (0.7, 0.7, 0.7),
+            },
+        ])
+
+        if self.use_proportional:
+            slots.extend([
+                {
+                    'id': 'proportional',
+                    'text': 'O: Proportional  Shift+O: Proportional Menu',
+                    'color': (0.8, 0.8, 0.3),
+                },
+                {
+                    'id': 'radius',
+                    'text': 'Wheel/[ ]: Radius  1-8: Falloff  C: Connected',
+                    'color': (0.85, 0.85, 0.85),
+                },
+            ])
+        else:
+            slots.append({
+                'id': 'proportional_off',
+                'text': 'O: Enable Proportional',
+                'color': (0.8, 0.8, 0.3),
+            })
+
+        return slots
+
+    def _draw_cursor_help(self):
+        """Draw cursor-help text near mouse position."""
+        mouse_pos = getattr(self, '_mouse_pos', None)
+        if mouse_pos is None:
+            return
+
+        mx = float(mouse_pos.x)
+        my = float(mouse_pos.y)
+        offset_x = 20
+        offset_y = 50
+        line_height = 20
+        font_size = 16
+        font_id = 0
+
+        slots = self._get_cursor_help_slots()
+        if not slots:
+            return
+
+        try:
+            visible_index = 0
+            for slot in slots:
+                red, green, blue = slot['color']
+                blf.color(font_id, red, green, blue, 1.0)
+
+                if slot['id'] == 'active_mode':
+                    blf.size(font_id, int(font_size * 1.4))
+                else:
+                    blf.size(font_id, font_size)
+
+                y_pos = my - offset_y - (visible_index * line_height)
+                blf.position(font_id, mx + offset_x, y_pos, 0)
+                blf.draw(font_id, slot['text'])
+                visible_index += 1
+        except Exception:
+            pass
 
     def adjust_proportional_falloff(self, context, new_size):
         """
@@ -68,36 +173,25 @@ class MESH_OT_super_orient_modal(bpy.types.Operator):
         """
         obj = context.active_object
         self.proportional_size = new_size
+        self._ensure_connected_only_falloff_map(self.proportional_size)
         
         # Sync with Blender's global proportional editing distance setting
         context.scene.tool_settings.proportional_distance = new_size
-        print(f"DEBUG: Updated global proportional distance to {new_size:.3f}")
-        
-        # DEBUG: Check current vertex positions before reset
-        sample_vert = list(self.selected_verts)[0]
-        print(f"DEBUG: Before reset - sample vertex at: {sample_vert.co}")
         
         # Store current mouse position before reset
         current_mouse_before_reset = self.current_mouse_pos.copy()
-        print(f"DEBUG: Mouse position before reset: {current_mouse_before_reset}")
         
         # FIRST: Reset to original state (vertices and mouse cursor)
         self.reset_to_original_state(context)
         
         # Restore the mouse position that was current before the reset
         self.current_mouse_pos = current_mouse_before_reset
-        print(f"DEBUG: Restored mouse position after reset: {self.current_mouse_pos}")
-        
-        # DEBUG: Check vertex positions after reset
-        print(f"DEBUG: After reset - sample vertex at: {sample_vert.co}")
         
         # THEN: Recalculate proportional vertices with new size FROM ORIGINAL POSITIONS (vectorized)
         obj = context.active_object
-        print(f"DEBUG ORIENT: Vectorized falloff recompute from: {self.original_selection_centroid_local}")
         self.proportional_verts = self._compute_proportional_vertices_np(
             self.original_selection_centroid_local, self.proportional_size, self.proportional_falloff, self.use_connected_only
         )
-        print(f"DEBUG: Recalculated {len(self.proportional_verts)} proportional vertices")
         
         # Check if falloff encompasses entire mesh by looking for vertices with zero weight
         total_mesh_verts = len(self.bm.verts)
@@ -105,27 +199,21 @@ class MESH_OT_super_orient_modal(bpy.types.Operator):
         
         if affected_verts < total_mesh_verts:
             # There are still unaffected vertices - calculate new pivot point normally
-            self.pivot_point = math_utils.calculate_proportional_border_vertices_centroid(
-                self.selected_faces, self.bm, obj.matrix_world, self.proportional_size
+            self.pivot_point = self._calculate_proportional_pivot_point(
+                obj,
+                self.proportional_size,
             )
             self.last_valid_pivot_point = self.pivot_point.copy()  # Update last valid pivot
-            print(f"DEBUG: New pivot point: {self.pivot_point} (affected {affected_verts}/{total_mesh_verts} verts)")
         else:
             # Falloff encompasses entire mesh - use frozen last valid pivot point
             if self.last_valid_pivot_point:
                 self.pivot_point = self.last_valid_pivot_point.copy()
-                print(f"DEBUG: Falloff encompasses entire mesh ({affected_verts}/{total_mesh_verts} verts) - using frozen pivot point: {self.pivot_point}")
             else:
                 # Fallback - calculate pivot anyway but warn
-                self.pivot_point = math_utils.calculate_proportional_border_vertices_centroid(
-                    self.selected_faces, self.bm, obj.matrix_world, self.proportional_size
+                self.pivot_point = self._calculate_proportional_pivot_point(
+                    obj,
+                    self.proportional_size,
                 )
-                print(f"DEBUG: Warning - no last valid pivot available, using calculated pivot: {self.pivot_point}")
-        
-        # DEBUG: Check orientation target synchronization
-        print(f"DEBUG: Green cross will be drawn at: {self.pivot_point}")
-        print(f"DEBUG: Rotation algorithm will use target: {self.pivot_point}")
-        print(f"DEBUG: Target coordinates: X={self.pivot_point.x:.3f}, Y={self.pivot_point.y:.3f}, Z={self.pivot_point.z:.3f}")
         
         # Update original positions cache for new vertex set
         self.original_vert_positions = {}
@@ -137,7 +225,6 @@ class MESH_OT_super_orient_modal(bpy.types.Operator):
         pivot_point_local = obj.matrix_world.inverted() @ self.pivot_point
         dir_local = (pivot_point_local - self.original_faces_centroid_local)
         self.initial_direction_to_pivot_local = dir_local.normalized() if dir_local.length > 0 else dir_local
-        print(f"DEBUG: Updated initial direction to pivot: {self.initial_direction_to_pivot}")
         
         # Update circle and cross visualization
         # Center the falloff circle at the SELECTION BORDER centroid (unselected verts adjacent to selected)
@@ -147,9 +234,7 @@ class MESH_OT_super_orient_modal(bpy.types.Operator):
         
         # IMPORTANT: Reapply current mouse transformation after reset
         # This ensures the selection maintains its current position/rotation even after falloff changes
-        print(f"DEBUG: About to reapply mouse transformation. Current mouse pos: {self.current_mouse_pos}")
         self.apply_mouse_transformation(context)
-        print(f"DEBUG: Finished reapplying mouse transformation")
         # Update HUD
         self.update_hud(context)
 
@@ -215,10 +300,14 @@ class MESH_OT_super_orient_modal(bpy.types.Operator):
         verts = self.bm.verts
         n = len(verts)
         adj = [[] for _ in range(n)]
-        for v in verts:
-            idx = v.index
-            for e in v.link_edges:
-                adj[idx].append(e.other_vert(v).index)
+        for edge in self.bm.edges:
+            idx0 = int(edge.verts[0].index)
+            idx1 = int(edge.verts[1].index)
+            co0 = self._coords_world_np[idx0]
+            co1 = self._coords_world_np[idx1]
+            edge_len = float(np.linalg.norm(co1 - co0))
+            adj[idx0].append((idx1, edge_len))
+            adj[idx1].append((idx0, edge_len))
         self._adjacency = adj
         # Also compute connected components once (for fast connected-only masking)
         self._component_id = [-1] * n
@@ -231,12 +320,118 @@ class MESH_OT_super_orient_modal(bpy.types.Operator):
             self._component_id[i] = comp
             qi = 0
             while qi < len(q):
-                u = q[qi]; qi += 1
-                for nb in self._adjacency[u]:
+                u = q[qi]
+                qi += 1
+                for nb, _edge_len in self._adjacency[u]:
                     if self._component_id[nb] == -1:
                         self._component_id[nb] = comp
                         q.append(nb)
             comp += 1
+
+    def _rebuild_connected_only_mask(self, radius):
+        """Build connected-only topological falloff cache for given radius."""
+        self._connected_mask_radius = float(radius)
+        self._connected_mask_indices = np.empty((0,), dtype=np.int32)
+        self._connected_mask_topo_dist = np.empty((0,), dtype=np.float32)
+
+        if not self._seed_index_list or radius <= 0.0:
+            return
+
+        self._ensure_adjacency()
+        n = len(self.bm.verts)
+        max_radius = float(radius)
+
+        # Multi-source Dijkstra in world-space edge lengths.
+        dist = np.full((n,), np.inf, dtype=np.float64)
+        heap = []
+        for seed_idx in self._seed_index_list:
+            seed = int(seed_idx)
+            if seed < 0 or seed >= n:
+                continue
+            dist[seed] = 0.0
+            heapq.heappush(heap, (0.0, seed))
+
+        while heap:
+            cur_dist, vert_idx = heapq.heappop(heap)
+            if cur_dist > max_radius:
+                break
+            if cur_dist > dist[vert_idx]:
+                continue
+
+            for nb_idx, edge_len in self._adjacency[vert_idx]:
+                next_dist = cur_dist + edge_len
+                if next_dist > max_radius:
+                    continue
+                if next_dist >= dist[nb_idx]:
+                    continue
+                dist[nb_idx] = next_dist
+                heapq.heappush(heap, (next_dist, nb_idx))
+
+        idxs = np.where(dist <= max_radius)[0]
+        self._connected_mask_indices = idxs.astype(np.int32, copy=False)
+        self._connected_mask_topo_dist = dist[idxs].astype(np.float32, copy=False)
+
+    def _ensure_connected_only_falloff_map(self, radius):
+        """Rebuild topological falloff map only when radius changes."""
+        if (
+            getattr(self, '_connected_mask_indices', None) is None
+            or getattr(self, '_connected_mask_topo_dist', None) is None
+            or getattr(self, '_connected_mask_radius', None) is None
+            or abs(self._connected_mask_radius - float(radius)) > 1e-9
+        ):
+            self._rebuild_connected_only_mask(radius)
+
+    def _calculate_proportional_pivot_point(self, obj, radius):
+        """Return proportional pivot point for current proportional mode."""
+        if not self.use_connected_only:
+            return math_utils.calculate_proportional_border_vertices_centroid(
+                self.selected_faces,
+                self.bm,
+                obj.matrix_world,
+                radius,
+            )
+        return self._calculate_topological_boundary_pivot_point(obj, radius)
+
+    def _calculate_topological_boundary_pivot_point(self, obj, radius):
+        """Centroid from topological falloff boundary for connected-only mode."""
+        self._ensure_connected_only_falloff_map(radius)
+        idxs = self._connected_mask_indices
+        if idxs is None or idxs.size == 0:
+            return math_utils.calculate_proportional_border_vertices_centroid(
+                self.selected_faces,
+                self.bm,
+                obj.matrix_world,
+                radius,
+            )
+
+        self._ensure_adjacency()
+        n = len(self.bm.verts)
+        in_topo = np.zeros((n,), dtype=bool)
+        in_topo[idxs] = True
+
+        outer_boundary = []
+        inner_boundary = []
+        for idx in range(n):
+            neighbors = self._adjacency[idx]
+            if in_topo[idx]:
+                if any(not in_topo[nb_idx] for nb_idx, _edge_len in neighbors):
+                    inner_boundary.append(idx)
+                continue
+            if any(in_topo[nb_idx] for nb_idx, _edge_len in neighbors):
+                outer_boundary.append(idx)
+
+        boundary_indices = outer_boundary or inner_boundary
+        if not boundary_indices:
+            return math_utils.calculate_proportional_border_vertices_centroid(
+                self.selected_faces,
+                self.bm,
+                obj.matrix_world,
+                radius,
+            )
+
+        boundary_world = self._coords_world_np[np.array(boundary_indices, dtype=np.int32)]
+        centroid = boundary_world.mean(axis=0)
+        return Vector((float(centroid[0]), float(centroid[1]), float(centroid[2])))
 
     def _falloff_weights_np(self, dist, radius, falloff):
         """Compute weights for normalized distances via NumPy. Uses unified falloff utilities."""
@@ -247,15 +442,33 @@ class MESH_OT_super_orient_modal(bpy.types.Operator):
         Falloff distance is measured from the selection border (nearest selected vertex), not the centroid.
         """
         include_seeds_always = True
-        # Candidate set: union of ranges around each seed so radius grows from border outward
+        # Candidate set: union of ranges around each seed so radius grows from
+        # border outward. In connected-only mode, this can be cached.
         cand_set = set()
+        topo_dist = None
+        if connected_only:
+            self._ensure_connected_only_falloff_map(radius)
+            idxs = self._connected_mask_indices
+            if idxs is None:
+                idxs = np.empty((0,), dtype=np.int32)
+            topo_dist = self._connected_mask_topo_dist
+            if topo_dist is None:
+                topo_dist = np.empty((0,), dtype=np.float32)
+        else:
+            idxs = None
+
+        if idxs is not None:
+            cand_set = set(idxs.tolist())
+
         if self._kd_seeds is not None and self._seed_index_list:
             # Choose strategy based on seed count
             many_seeds = len(self._seed_index_list) > 128
             # Ensure adjacency/components ready for connected-only filtering
             if connected_only and (getattr(self, '_component_id', None) is None):
                 self._ensure_adjacency()
-            if many_seeds:
+            if connected_only:
+                pass
+            elif many_seeds:
                 # Single expanded query around seed centroid covers all border neighborhoods
                 expanded = radius + max(self._max_seed_dist, 0.0)
                 for _co, idx, _d in self._kd.find_range(tuple(self._seed_centroid_world), expanded):
@@ -280,9 +493,17 @@ class MESH_OT_super_orient_modal(bpy.types.Operator):
         # Nothing found; still include seeds if requested
         if not cand_set and not include_seeds_always:
             return {}
-        idxs = np.fromiter(cand_set, dtype=np.int32) if cand_set else np.empty((0,), dtype=np.int32)
-        # Distances: nearest distance to any seed (border distance), vectorized in batches
-        if idxs.size and self._seed_world_np.shape[0] > 0:
+        if idxs is None:
+            idxs = (
+                np.fromiter(cand_set, dtype=np.int32)
+                if cand_set
+                else np.empty((0,), dtype=np.int32)
+            )
+        # Distances: connected-only uses cached topological distance.
+        # Non-connected mode uses nearest seed world-space distance.
+        if connected_only:
+            dist = topo_dist.astype(np.float32, copy=False)
+        elif idxs.size and self._seed_world_np.shape[0] > 0:
             pts = self._coords_world_np[idxs]  # (k,3)
             seeds = self._seed_world_np       # (s,3)
             k = pts.shape[0]
@@ -305,8 +526,6 @@ class MESH_OT_super_orient_modal(bpy.types.Operator):
         else:
             dist = np.empty((0,), dtype=np.float32)
 
-        # Connected-only mask is already enforced during candidate building via component equality
-        
         # Compute weights
         w = self._falloff_weights_np(dist, radius, falloff) if idxs.size else np.empty((0,), dtype=np.float32)
         # Build dict BMVert->weight (exclude zeros for cleanliness)
@@ -347,6 +566,48 @@ class MESH_OT_super_orient_modal(bpy.types.Operator):
         self.current_mouse_pos = current_mouse_before_reset
         self.apply_mouse_transformation(context)
 
+    def _queue_proportional_radius_update(self, new_size):
+        """Queue a proportional radius update and coalesce rapid wheel steps."""
+        self._queued_proportional_size = float(max(0.01, new_size))
+        self._radius_update_pending = True
+        self._radius_update_queued_at = time.perf_counter()
+
+    def _get_effective_proportional_size(self):
+        """Return most recent proportional size, including queued updates."""
+        if getattr(self, '_radius_update_pending', False):
+            pending = getattr(self, '_queued_proportional_size', None)
+            if pending is not None:
+                return float(pending)
+        return float(self.proportional_size)
+
+    def _flush_queued_proportional_radius_update(self, context, force=False):
+        """Apply queued radius update once input settles or when forced."""
+        if not getattr(self, '_radius_update_pending', False):
+            return False
+        if not force:
+            queued_at = getattr(self, '_radius_update_queued_at', 0.0)
+            debounce = getattr(self, '_radius_debounce_seconds', 0.05)
+            if (time.perf_counter() - queued_at) < debounce:
+                return False
+
+        pending_size = getattr(self, '_queued_proportional_size', None)
+        self._radius_update_pending = False
+        if pending_size is None:
+            return False
+        if abs(float(pending_size) - float(self.proportional_size)) <= 1e-9:
+            return False
+
+        self.adjust_proportional_falloff(context, float(pending_size))
+        return True
+
+    def _cleanup_modal_resources(self, context):
+        """Clean up timer resources used by the modal operator."""
+        timer = getattr(self, '_radius_update_timer', None)
+        if timer is not None:
+            context.window_manager.event_timer_remove(timer)
+            self._radius_update_timer = None
+        self._remove_cursor_help_handler()
+
     def apply_mouse_transformation(self, context):
         """
         Apply the current mouse transformation (translation and rotation) to the selection.
@@ -357,10 +618,7 @@ class MESH_OT_super_orient_modal(bpy.types.Operator):
         rv3d = context.space_data.region_3d
         
         if not region or not rv3d:
-            print("DEBUG: No region or rv3d available for transformation")
             return
-            
-        print(f"DEBUG: Applying transformation from {self.initial_mouse} to {self.current_mouse_pos}")
             
         view_normal = rv3d.view_rotation @ mathutils.Vector((0, 0, -1))
         
@@ -374,15 +632,11 @@ class MESH_OT_super_orient_modal(bpy.types.Operator):
             selection_centroid_world, view_normal
         )
         
-        print(f"DEBUG: Translation world: {translation_world}")
-        
         # Convert world space translation to local space for vertex operations
         translation = obj.matrix_world.inverted().to_3x3() @ translation_world
         
         # Apply axis constraints to translation
         constrained_translation = self.axis_constraints.apply_constraint(translation)
-        
-        print(f"DEBUG: Constrained translation: {constrained_translation}")
         
         # Calculate rotation matrix using the new utility function
         rotation_matrix = math_utils.calculate_spatial_relationship_rotation(
@@ -434,6 +688,8 @@ class MESH_OT_super_orient_modal(bpy.types.Operator):
         # Store initial state
         self.selected_faces = selected_faces
         self.initial_mouse = (event.mouse_region_x, event.mouse_region_y)
+        self._mouse_pos = Vector((event.mouse_region_x, event.mouse_region_y))
+        self._hud_help_visible = False
         
         # Check if proportional editing is enabled
         tool_settings = context.scene.tool_settings
@@ -447,12 +703,17 @@ class MESH_OT_super_orient_modal(bpy.types.Operator):
         
         # Build spatial caches for fast proportional queries
         self._build_spatial_caches(obj)
+        self._connected_mask_radius = None
+        self._connected_mask_indices = None
+        self._connected_mask_topo_dist = None
+        self._ensure_connected_only_falloff_map(self.proportional_size)
 
         # Calculate pivot point based on proportional editing settings
         if self.use_proportional:
             # Use proportional border vertices (outside falloff radius) as pivot
-            self.pivot_point = math_utils.calculate_proportional_border_vertices_centroid(
-                selected_faces, self.bm, obj.matrix_world, self.proportional_size
+            self.pivot_point = self._calculate_proportional_pivot_point(
+                obj,
+                self.proportional_size,
             )
             # Store the initial valid pivot point for fallback when falloff encompasses entire mesh
             self.last_valid_pivot_point = self.pivot_point.copy()
@@ -485,6 +746,16 @@ class MESH_OT_super_orient_modal(bpy.types.Operator):
         
         # Axis constraint state
         self.axis_constraints = axis_constraints.create_constraint_state()
+
+        # Debounced radius update state to avoid expensive recompute per wheel event.
+        self._queued_proportional_size = None
+        self._radius_update_pending = False
+        self._radius_update_queued_at = 0.0
+        self._radius_debounce_seconds = 0.05
+        self._radius_update_timer = context.window_manager.event_timer_add(
+            0.02,
+            window=context.window,
+        )
 
         # Twist state (in radians); positive twists around pivot-direction axis
         self.twist_angle = 0.0
@@ -534,6 +805,13 @@ class MESH_OT_super_orient_modal(bpy.types.Operator):
             viewport_drawing.start_pivot_cross_drawing(self.pivot_point)
         # HUD disabled for now
         self.update_hud(context)
+
+        self._cursor_help_draw_handler = bpy.types.SpaceView3D.draw_handler_add(
+            self._draw_cursor_help,
+            (),
+            'WINDOW',
+            'POST_PIXEL',
+        )
 
         # Cache last seen tool settings to detect external changes (e.g., menu)
         ts = context.scene.tool_settings
@@ -599,15 +877,42 @@ class MESH_OT_super_orient_modal(bpy.types.Operator):
 
     def modal(self, context, event):
         obj = context.edit_object
+
+        event_timer = getattr(event, 'timer', None)
+        if (
+            event.type == 'TIMER'
+            and getattr(self, '_radius_update_timer', None) is not None
+            and (event_timer is None or event_timer == self._radius_update_timer)
+        ):
+            self._flush_queued_proportional_radius_update(context)
+            return {'RUNNING_MODAL'}
+
         # Pass through raw modifier key events to allow viewport navigation combos
         if event.type in {'LEFT_SHIFT', 'RIGHT_SHIFT', 'LEFT_CTRL', 'RIGHT_CTRL', 'LEFT_ALT', 'RIGHT_ALT'}:
             return {'PASS_THROUGH'}
         
         # Sync any changes made via the Shift+O menu (tool settings) into the modal state
         self._sync_tool_settings_and_apply(context)
+
+        if event.type == 'H' and event.value == 'PRESS':
+            self._hud_help_visible = not getattr(self, '_hud_help_visible', False)
+            status = "ON" if self._hud_help_visible else "OFF"
+            self.report({'INFO'}, f"HUD Help: {status}")
+            context.area.tag_redraw()
+            return {'RUNNING_MODAL'}
         
         # Handle axis constraint toggles
         if self.axis_constraints.handle_constraint_event(event, "Super Orient"):
+            self.update_hud(context)
+            return {'RUNNING_MODAL'}
+
+        elif event.type == 'C' and event.value == 'PRESS' and self.use_proportional:
+            # Toggle connected-only while modal is running.
+            ts = context.scene.tool_settings
+            self.use_connected_only = not self.use_connected_only
+            ts.use_proportional_connected = self.use_connected_only
+            self.adjust_proportional_falloff(context, self.proportional_size)
+            self._ts_connected = bool(ts.use_proportional_connected)
             self.update_hud(context)
             return {'RUNNING_MODAL'}
 
@@ -656,32 +961,32 @@ class MESH_OT_super_orient_modal(bpy.types.Operator):
 
         elif event.type == 'WHEELUPMOUSE' and self.use_proportional:
             # Increase proportional size
-            new_size = self.proportional_size * 1.1
-            print(f"Super Orient: Proportional size increased to {new_size:.3f}")
-            self.adjust_proportional_falloff(context, new_size)
+            base_size = self._get_effective_proportional_size()
+            new_size = base_size * 1.1
+            self._queue_proportional_radius_update(new_size)
             return {'RUNNING_MODAL'}
             
         elif event.type == 'WHEELDOWNMOUSE' and self.use_proportional:
             # Decrease proportional size (minimum 0.01)
-            new_size = max(0.01, self.proportional_size * 0.9)
-            print(f"Super Orient: Proportional size decreased to {new_size:.3f}")
-            self.adjust_proportional_falloff(context, new_size)
+            base_size = self._get_effective_proportional_size()
+            new_size = max(0.01, base_size * 0.9)
+            self._queue_proportional_radius_update(new_size)
             
             return {'RUNNING_MODAL'}
             
         elif event.type == 'LEFT_BRACKET' and event.value == 'PRESS' and self.use_proportional:
             # Decrease proportional size (alternative to mouse wheel)
-            new_size = max(0.01, self.proportional_size * 0.9)
-            print(f"Super Orient: Proportional size decreased to {new_size:.3f}")
-            self.adjust_proportional_falloff(context, new_size)
+            base_size = self._get_effective_proportional_size()
+            new_size = max(0.01, base_size * 0.9)
+            self._queue_proportional_radius_update(new_size)
             
             return {'RUNNING_MODAL'}
             
         elif event.type == 'RIGHT_BRACKET' and event.value == 'PRESS' and self.use_proportional:
             # Increase proportional size (alternative to mouse wheel)
-            new_size = self.proportional_size * 1.1
-            print(f"Super Orient: Proportional size increased to {new_size:.3f}")
-            self.adjust_proportional_falloff(context, new_size)
+            base_size = self._get_effective_proportional_size()
+            new_size = base_size * 1.1
+            self._queue_proportional_radius_update(new_size)
             
             return {'RUNNING_MODAL'}
         
@@ -716,7 +1021,9 @@ class MESH_OT_super_orient_modal(bpy.types.Operator):
 
             
         elif event.type == 'MOUSEMOVE':
+            self._flush_queued_proportional_radius_update(context)
             # Update current mouse position with precision handling
+            self._mouse_pos = Vector((event.mouse_region_x, event.mouse_region_y))
             raw = (event.mouse_region_x, event.mouse_region_y)
             adjusted = self.precision.on_move(
                 raw,
@@ -733,11 +1040,13 @@ class MESH_OT_super_orient_modal(bpy.types.Operator):
             
         elif (event.type == 'LEFTMOUSE' and event.value == 'PRESS') or (event.type == 'RET' and event.value == 'PRESS'):
             # Confirm operation
+            self._flush_queued_proportional_radius_update(context, force=True)
             print("Super Orient Modal: CONFIRMING operation")
             
             # Stop overlays
             if self.use_proportional:
                 viewport_drawing.stop_proportional_circle_drawing()
+            self._cleanup_modal_resources(context)
             
             # Recalculate all face normals for final result
             bmesh.ops.recalc_face_normals(self.bm, faces=self.bm.faces)
@@ -753,6 +1062,7 @@ class MESH_OT_super_orient_modal(bpy.types.Operator):
             # Stop overlays
             if self.use_proportional:
                 viewport_drawing.stop_proportional_circle_drawing()
+            self._cleanup_modal_resources(context)
             
             # Restore all affected vertices to original positions
             for vert, original_pos in self.original_vert_positions.items():
