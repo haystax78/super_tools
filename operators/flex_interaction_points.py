@@ -214,6 +214,44 @@ def handle_left_mouse(operator, context, event):
                 else:
                     state.profile_point_twists.insert(closest_segment + 1, 0.0)
             
+            state.ensure_helix_point_arrays()
+            insert_idx = closest_segment + 1
+            if 0 <= insert_idx < len(state.helix_point_magnitudes):
+                prev_idx = max(0, insert_idx - 1)
+                next_idx = min(
+                    len(state.helix_point_magnitudes) - 1,
+                    insert_idx + 1,
+                )
+                prev_mag = state.helix_point_magnitudes[prev_idx]
+                next_mag = state.helix_point_magnitudes[next_idx]
+                state.helix_point_magnitudes[insert_idx] = (
+                    (prev_mag + next_mag) * 0.5
+                )
+
+            if 0 <= insert_idx < len(state.helix_point_frequencies):
+                prev_idx = max(0, insert_idx - 1)
+                next_idx = min(
+                    len(state.helix_point_frequencies) - 1,
+                    insert_idx + 1,
+                )
+                prev_freq = state.helix_point_frequencies[prev_idx]
+                next_freq = state.helix_point_frequencies[next_idx]
+                state.helix_point_frequencies[insert_idx] = (
+                    (prev_freq + next_freq) * 0.5
+                )
+
+            if 0 <= insert_idx < len(state.helix_point_slants):
+                prev_idx = max(0, insert_idx - 1)
+                next_idx = min(
+                    len(state.helix_point_slants) - 1,
+                    insert_idx + 1,
+                )
+                prev_slant = state.helix_point_slants[prev_idx]
+                next_slant = state.helix_point_slants[next_idx]
+                state.helix_point_slants[insert_idx] = (
+                    (prev_slant + next_slant) * 0.5
+                )
+            
             state.creating_point_index = closest_segment + 1
             state.creating_point_start_pos = new_point_3d.copy()
         else:
@@ -228,6 +266,8 @@ def handle_left_mouse(operator, context, event):
                 operator._add_first_point(new_point_3d)
             else:
                 operator._add_point_to_closest_end(context, mouse_pos, new_point_3d)
+
+            state.ensure_helix_point_arrays()
         
         # Update preview mesh
         if len(state.points_3d) >= 2 and len(state.point_radii_3d) >= 2:
@@ -327,6 +367,12 @@ def handle_right_mouse(operator, context, event):
             state.point_tensions.pop(delete_index)
         if hasattr(state, 'profile_point_twists') and delete_index < len(state.profile_point_twists):
             state.profile_point_twists.pop(delete_index)
+        if delete_index < len(getattr(state, 'helix_point_magnitudes', [])):
+            state.helix_point_magnitudes.pop(delete_index)
+        if delete_index < len(getattr(state, 'helix_point_frequencies', [])):
+            state.helix_point_frequencies.pop(delete_index)
+        if delete_index < len(getattr(state, 'helix_point_slants', [])):
+            state.helix_point_slants.pop(delete_index)
         
         updated_no_tangent = set()
         for idx in state.no_tangent_points:
@@ -367,6 +413,54 @@ def handle_mouse_move(operator, context, event):
     """Handle mouse movement for dragging, adjusting, and hovering"""
     mouse_pos = (event.mouse_region_x, event.mouse_region_y)
     state.last_mouse_pos = mouse_pos
+
+    if (
+        getattr(state, 'profile_helix_mode', False)
+        and getattr(state, 'helix_start_mouse', None) is not None
+    ):
+        state.ensure_helix_point_arrays()
+        start_x, start_y = state.helix_start_mouse
+        dx = mouse_pos[0] - start_x
+        dy = mouse_pos[1] - start_y
+
+        mag_sensitivity = 0.01
+        freq_sensitivity = 0.02
+        start_mag = getattr(state, 'helix_start_magnitude', 0.0)
+        start_freq = getattr(state, 'helix_start_frequency', 0.0)
+
+        new_mag = max(
+            -100.0,
+            min(100.0, start_mag + (dx * mag_sensitivity)),
+        )
+        new_freq = max(
+            0.0,
+            min(100.0, start_freq + (dy * freq_sensitivity)),
+        )
+
+        edit_idx = getattr(state, 'helix_edit_point_index', -1)
+        if 0 <= edit_idx < len(state.points_3d):
+            state.helix_point_magnitudes[edit_idx] = new_mag
+            state.helix_point_frequencies[edit_idx] = new_freq
+            state.helix_magnitude = new_mag
+            state.helix_frequency = new_freq
+        else:
+            state.helix_magnitude = new_mag
+            state.helix_frequency = new_freq
+            for idx in range(len(state.helix_point_magnitudes)):
+                state.helix_point_magnitudes[idx] = new_mag
+            for idx in range(len(state.helix_point_frequencies)):
+                state.helix_point_frequencies[idx] = new_freq
+
+        if len(state.points_3d) >= 2 and len(state.point_radii_3d) >= 2:
+            mesh_utils.update_preview_mesh(
+                context,
+                state.points_3d,
+                state.point_radii_3d,
+                resolution=operator.resolution,
+                segments=operator.segments,
+            )
+        context.area.tag_redraw()
+        return {'RUNNING_MODAL'}
     
     # Handle group move (move all points together in screen space)
     if state.group_move_active and state.group_move_start_mouse_pos is not None:

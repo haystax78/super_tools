@@ -10,6 +10,110 @@ from . import flex_math as math_utils
 from . import flex_conversion as conversion
 
 
+def _sample_helix_profile(control_t_values, control_values, target_t):
+    """Linearly sample helix profile values between control points."""
+    if not control_values:
+        return 0.0
+    if len(control_values) == 1:
+        return float(control_values[0])
+    if target_t <= control_t_values[0]:
+        return float(control_values[0])
+    if target_t >= control_t_values[-1]:
+        return float(control_values[-1])
+
+    for idx in range(1, len(control_t_values)):
+        t0 = control_t_values[idx - 1]
+        t1 = control_t_values[idx]
+        if target_t <= t1:
+            v0 = float(control_values[idx - 1])
+            v1 = float(control_values[idx])
+            denom = t1 - t0
+            if abs(denom) <= 1e-8:
+                return v1
+            blend = (target_t - t0) / denom
+            return (v0 * (1.0 - blend)) + (v1 * blend)
+
+    return float(control_values[-1])
+
+
+def _apply_helix_to_curve_points(curve_points, original_control_points=None):
+    """Return evaluated points with non-destructive helix offset applied."""
+    if len(curve_points) < 2:
+        return [point.copy() for point in curve_points]
+
+    cumulative_lengths = [0.0]
+    for idx in range(1, len(curve_points)):
+        seg_len = (curve_points[idx] - curve_points[idx - 1]).length
+        cumulative_lengths.append(cumulative_lengths[-1] + seg_len)
+
+    total_length = cumulative_lengths[-1]
+    if total_length <= 1e-8:
+        return [point.copy() for point in curve_points]
+
+    coordinate_systems = math_utils.create_consistent_coordinate_systems(
+        curve_points,
+    )
+
+    control_points = (
+        original_control_points
+        if original_control_points and len(original_control_points) >= 2
+        else curve_points
+    )
+    control_lengths = [0.0]
+    for idx in range(1, len(control_points)):
+        seg_len = (control_points[idx] - control_points[idx - 1]).length
+        control_lengths.append(control_lengths[-1] + seg_len)
+    control_total = control_lengths[-1]
+    if control_total > 1e-8:
+        control_t_values = [length / control_total for length in control_lengths]
+    else:
+        count = max(1, len(control_points) - 1)
+        control_t_values = [idx / count for idx in range(len(control_points))]
+
+    point_mags = list(getattr(state, 'helix_point_magnitudes', []) or [])
+    point_freqs = list(getattr(state, 'helix_point_frequencies', []) or [])
+    point_slants = list(getattr(state, 'helix_point_slants', []) or [])
+    control_count = len(control_points)
+    if len(point_mags) < control_count:
+        point_mags.extend(
+            [float(getattr(state, 'helix_magnitude', 0.0))]
+            * (control_count - len(point_mags))
+        )
+    if len(point_freqs) < control_count:
+        point_freqs.extend(
+            [float(getattr(state, 'helix_frequency', 0.0))]
+            * (control_count - len(point_freqs))
+        )
+    if len(point_slants) < control_count:
+        point_slants.extend(
+            [float(getattr(state, 'helix_slant', 0.0))]
+            * (control_count - len(point_slants))
+        )
+    point_mags = point_mags[:control_count]
+    point_freqs = point_freqs[:control_count]
+    point_slants = point_slants[:control_count]
+
+    if (
+        all(abs(float(val)) <= 1e-8 for val in point_mags)
+        or all(float(val) <= 1e-8 for val in point_freqs)
+    ):
+        return [point.copy() for point in curve_points]
+
+    helix_points = []
+    for idx, point in enumerate(curve_points):
+        t = cumulative_lengths[idx] / total_length
+        helix_mag = _sample_helix_profile(control_t_values, point_mags, t)
+        helix_freq = _sample_helix_profile(control_t_values, point_freqs, t)
+        helix_slant = _sample_helix_profile(control_t_values, point_slants, t)
+        phase = (2.0 * math.pi * helix_freq) * t
+        tangent, side, up = coordinate_systems[idx]
+        helix_dir = (side * math.cos(phase)) + (up * math.sin(phase))
+        slant_dir = tangent * (helix_slant * math.sin(phase))
+        helix_points.append(point + (helix_dir * helix_mag) + slant_dir)
+
+    return helix_points
+
+
 def _get_or_create_mirror_empty():
     """Get or create the mirror object empty at world origin."""
     empty_name = state.mirror_empty_name
@@ -831,8 +935,13 @@ def create_flex_mesh_from_curve(context, curve_points_3d, radii_3d, resolution=1
             sharp_points=no_tangent_points
         )
     
-    vertices, faces, fill_boundaries = create_flex_mesh(
+    helix_curve_points = _apply_helix_to_curve_points(
         smooth_curve_points_3d,
+        original_control_points=curve_points_3d,
+    )
+
+    vertices, faces, fill_boundaries = create_flex_mesh(
+        helix_curve_points,
         smooth_radii_3d,
         resolution=resolution,
         cap_segments=4,
@@ -1034,8 +1143,13 @@ def update_preview_mesh(context, curve_points_3d, radii_3d, resolution=16, segme
                 smooth_radii_3d[0] = radii_3d[0]
                 smooth_radii_3d[-1] = radii_3d[-1]
             
+            helix_curve_points = _apply_helix_to_curve_points(
+                smooth_curve_points_3d,
+                original_control_points=curve_points_3d,
+            )
+
             vertices, faces, fill_boundaries = create_flex_mesh(
-                smooth_curve_points_3d, 
+                helix_curve_points,
                 smooth_radii_3d, 
                 resolution=resolution, 
                 cap_segments=4, 
@@ -1081,8 +1195,13 @@ def update_preview_mesh(context, curve_points_3d, radii_3d, resolution=16, segme
                 smooth_radii_3d[0] = radii_3d[0]
                 smooth_radii_3d[-1] = radii_3d[-1]
             
-            vertices, faces, fill_boundaries = create_flex_mesh(
+            helix_curve_points = _apply_helix_to_curve_points(
                 smooth_curve_points_3d,
+                original_control_points=curve_points_3d,
+            )
+
+            vertices, faces, fill_boundaries = create_flex_mesh(
+                helix_curve_points,
                 smooth_radii_3d,
                 resolution=resolution,
                 cap_segments=4,

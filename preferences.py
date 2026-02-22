@@ -289,7 +289,7 @@ class SuperToolsPreferences(bpy.types.AddonPreferences):
         description="Default length segments for new flex meshes",
         default=32,
         min=8,
-        max=128
+        max=256
     )
     flex_default_radius: bpy.props.FloatProperty(
         name="Default Radius",

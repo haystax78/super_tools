@@ -915,6 +915,42 @@ def modal_handler(operator, context, event):
 
     if event.type in {'WHEELUPMOUSE', 'WHEELDOWNMOUSE'}:
         wheel_up = (event.type == 'WHEELUPMOUSE')
+
+        # Helix mode: wheel adjusts helix slant.
+        if getattr(state, 'profile_helix_mode', False):
+            state.ensure_helix_point_arrays()
+            slant_step = 0.1
+            delta = slant_step if wheel_up else -slant_step
+            edit_idx = getattr(state, 'helix_edit_point_index', -1)
+
+            if 0 <= edit_idx < len(state.helix_point_slants):
+                new_slant = max(
+                    -5.0,
+                    min(5.0, state.helix_point_slants[edit_idx] + delta),
+                )
+                state.helix_point_slants[edit_idx] = new_slant
+                state.helix_slant = new_slant
+                operator.report({'INFO'}, f"Helix slant (Point): {new_slant:.2f}")
+            else:
+                new_slant = max(
+                    -5.0,
+                    min(5.0, getattr(state, 'helix_slant', 0.0) + delta),
+                )
+                state.helix_slant = new_slant
+                for idx in range(len(state.helix_point_slants)):
+                    state.helix_point_slants[idx] = new_slant
+                operator.report({'INFO'}, f"Helix slant (Global): {new_slant:.2f}")
+
+            if len(state.points_3d) >= 2 and len(state.point_radii_3d) >= 2:
+                mesh_utils.update_preview_mesh(
+                    context,
+                    state.points_3d,
+                    state.point_radii_3d,
+                    resolution=operator.resolution,
+                    segments=operator.segments,
+                )
+            context.area.tag_redraw()
+            return {'RUNNING_MODAL'}
         
         # Radius ramp: when radius_scale_active (RMB held in empty space), use wheel for ramp
         if getattr(state, 'radius_scale_active', False) and not getattr(state, 'profile_twist_mode', False):
@@ -991,7 +1027,7 @@ def modal_handler(operator, context, event):
         else:
             old_val = operator.segments
             step = 4 if wheel_up else -4
-            operator.segments = max(8, min(128, operator.segments + step))
+            operator.segments = max(8, min(256, operator.segments + step))
             if operator.segments != old_val:
                 operator.report({'INFO'}, f"Length segments: {operator.segments}")
                 if len(state.points_3d) >= 2 and len(state.point_radii_3d) >= 2:
@@ -1016,8 +1052,99 @@ def modal_handler(operator, context, event):
         context.area.tag_redraw()
         return {'RUNNING_MODAL'}
 
+    if (
+        event.type == state.KEY_HELIX
+        and event.value == 'PRESS'
+        and not getattr(state, 'profile_helix_mode', False)
+    ):
+        state.profile_helix_mode = True
+        state.ensure_helix_point_arrays()
+        helix_point_index = -1
+        hover_idx = getattr(state, 'hover_point_index', -1)
+        if 0 <= hover_idx < len(state.points_3d):
+            helix_point_index = hover_idx
+        state.helix_edit_point_index = helix_point_index
+        state.helix_start_mouse = (event.mouse_region_x, event.mouse_region_y)
+        state.helix_start_points = [point.copy() for point in state.points_3d]
+        if 0 <= helix_point_index < len(state.helix_point_magnitudes):
+            state.helix_start_magnitude = state.helix_point_magnitudes[
+                helix_point_index
+            ]
+            state.helix_start_frequency = state.helix_point_frequencies[
+                helix_point_index
+            ]
+            state.helix_start_slant = state.helix_point_slants[
+                helix_point_index
+            ]
+            state.helix_magnitude = state.helix_start_magnitude
+            state.helix_frequency = state.helix_start_frequency
+            state.helix_slant = state.helix_start_slant
+        else:
+            state.helix_start_magnitude = getattr(state, 'helix_magnitude', 0.0)
+            state.helix_start_frequency = getattr(state, 'helix_frequency', 0.0)
+            state.helix_start_slant = getattr(state, 'helix_slant', 0.0)
+        state.save_history_state()
+        if helix_point_index >= 0:
+            operator.report({'INFO'}, f"Helix Mode: ON (Point {helix_point_index + 1})")
+        else:
+            operator.report({'INFO'}, "Helix Mode: ON (Global)")
+        context.area.tag_redraw()
+        return {'RUNNING_MODAL'}
+    if event.type == state.KEY_HELIX and event.value == 'RELEASE':
+        state.profile_helix_mode = False
+        state.helix_edit_point_index = -1
+        state.helix_start_mouse = None
+        state.helix_start_points = []
+        state.helix_start_magnitude = 0.0
+        state.helix_start_frequency = 0.0
+        state.helix_start_slant = 0.0
+        operator.report({'INFO'}, "Helix Mode: OFF")
+        context.area.tag_redraw()
+        return {'RUNNING_MODAL'}
+
     # Handle middle mouse button for radius equalize and twist reset
     if event.type == 'MIDDLEMOUSE' and event.value == 'PRESS':
+        # Helix mode: MMB resets helix values and locks helix input
+        # until O is released and pressed again.
+        if getattr(state, 'profile_helix_mode', False) and not (event.alt or event.ctrl or event.shift or event.oskey):
+            state.save_history_state()
+            state.ensure_helix_point_arrays()
+            edit_idx = getattr(state, 'helix_edit_point_index', -1)
+            if 0 <= edit_idx < len(state.helix_point_magnitudes):
+                state.helix_point_magnitudes[edit_idx] = 0.0
+                state.helix_point_frequencies[edit_idx] = 0.0
+                if edit_idx < len(state.helix_point_slants):
+                    state.helix_point_slants[edit_idx] = 0.0
+            else:
+                for idx in range(len(state.helix_point_magnitudes)):
+                    state.helix_point_magnitudes[idx] = 0.0
+                for idx in range(len(state.helix_point_frequencies)):
+                    state.helix_point_frequencies[idx] = 0.0
+                for idx in range(len(state.helix_point_slants)):
+                    state.helix_point_slants[idx] = 0.0
+            state.helix_magnitude = 0.0
+            state.helix_frequency = 0.0
+            state.helix_slant = 0.0
+            state.helix_start_mouse = None
+            state.helix_start_points = []
+            state.helix_start_magnitude = 0.0
+            state.helix_start_frequency = 0.0
+            state.helix_start_slant = 0.0
+            if len(state.points_3d) >= 2 and len(state.point_radii_3d) >= 2:
+                mesh_utils.update_preview_mesh(
+                    context,
+                    state.points_3d,
+                    state.point_radii_3d,
+                    resolution=operator.resolution,
+                    segments=operator.segments,
+                )
+            operator.report(
+                {'INFO'},
+                "Helix values reset (release and press O to edit again)",
+            )
+            context.area.tag_redraw()
+            return {'RUNNING_MODAL'}
+
         # Radius scale active: MMB equalizes all radii to average
         if getattr(state, 'radius_scale_active', False) and not getattr(state, 'profile_twist_mode', False):
             original = getattr(state, 'radius_scale_original_radii', None) or list(state.point_radii_3d)
@@ -1066,7 +1193,7 @@ def modal_handler(operator, context, event):
         return {'PASS_THROUGH'}
 
     allowed_tool_keys = {
-        'ESC', 'RET', 'NUMPAD_ENTER', 'C', 'Z', 'F', 'LEFT_BRACKET', 'RIGHT_BRACKET', 'COMMA', 'PERIOD', 'T', 'A', 'R',
+        'ESC', 'RET', 'NUMPAD_ENTER', 'C', 'Z', 'F', 'LEFT_BRACKET', 'RIGHT_BRACKET', 'COMMA', 'PERIOD', 'T', 'O', 'A', 'R',
         'ONE', 'TWO', 'THREE', 'FOUR', 'FIVE', 'SIX', 'SEVEN', 'EIGHT', 'NINE', 'BACK_SPACE',
         'MOUSEMOVE', 'LEFTMOUSE', 'RIGHTMOUSE', 'INBETWEEN_MOUSEMOVE', 'SPACE', 'SPACEBAR', 'SLASH', 'S', 'X', 'B', 'H', 'G',
         'MIDDLEMOUSE', 'WHEELUPMOUSE', 'WHEELDOWNMOUSE', 'TRACKPADPAN', 'TRACKPADZOOM',

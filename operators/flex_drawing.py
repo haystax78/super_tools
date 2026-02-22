@@ -34,6 +34,7 @@ class CursorHUD:
         'radii_scale': True,
         'radii_ramp': True,
         'twist': True,
+        'helix': True,
         'parent': True,
         'snapping': True,
         'adaptive': True,
@@ -48,6 +49,7 @@ class CursorHUD:
         'radii_scale': 1.0,
         'radii_ramp': 1.0,
         'twist': 1.0,
+        'helix': 1.0,
         'parent': 1.0,
         'snapping': 1.0,
         'adaptive': 1.0,
@@ -60,6 +62,7 @@ class CursorHUD:
         slots = []
 
         twist_mode = bool(getattr(state, 'profile_twist_mode', False))
+        helix_mode = bool(getattr(state, 'profile_helix_mode', False))
         radius_mode = bool(getattr(state, 'radius_scale_active', False))
         parent_mode = bool(getattr(state, 'parent_mode_active', False))
         profile_draw_mode = bool(getattr(state, 'custom_profile_draw_mode', False))
@@ -73,6 +76,9 @@ class CursorHUD:
         elif twist_mode:
             mode_text = "Mode: Twist"
             mode_color = (1.0, 0.6, 0.2)
+        elif helix_mode:
+            mode_text = "Mode: Helix"
+            mode_color = (0.9, 0.7, 1.0)
         elif radius_mode:
             mode_text = "Mode: Radius"
             mode_color = (0.2, 1.0, 0.6)
@@ -226,7 +232,34 @@ class CursorHUD:
                 'text': f"Twist Mode [{twist_key}]",
                 'color': (1.0, 0.8, 0.2)
             })
-        
+
+        helix_active = bool(getattr(state, 'profile_helix_mode', False))
+        helix_key = getattr(state, 'KEY_HELIX', 'O')
+        helix_mag = getattr(state, 'helix_magnitude', 0.0)
+        helix_freq = getattr(state, 'helix_frequency', 0.0)
+        helix_slant = getattr(state, 'helix_slant', 0.0)
+        if helix_active:
+            slots.append({
+                'id': 'helix',
+                'text': f"Helix Mode [{helix_key}]",
+                'color': (0.9, 0.7, 1.0)
+            })
+            slots.append({
+                'id': 'helix_controls',
+                'text': (
+                    f"Mouse X: Magnitude ({helix_mag:.2f}), "
+                    f"Mouse Y: Frequency ({helix_freq:.2f}), "
+                    f"Wheel: Slant ({helix_slant:.2f})"
+                ),
+                'color': (0.8, 0.6, 1.0)
+            })
+        else:
+            slots.append({
+                'id': 'helix',
+                'text': f"Helix Mode [{helix_key}]",
+                'color': (0.9, 0.7, 1.0)
+            })
+
         snapping_mode = getattr(state, 'snapping_mode', 0)
         snapping_key = getattr(state, 'KEY_SNAPPING_MODE', 'S')
         if snapping_mode == getattr(state, 'SNAPPING_FACE', 1):

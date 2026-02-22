@@ -2,7 +2,7 @@
 
 A Blender addon that provides advanced mesh editing tools for enhanced modeling workflows.
 
-## What's New in v1.2.0
+## What's New in v1.2.5
 
 - **Super Duplicate & Super Transform**: New modal operators for transforming sculpt objects
   - Duplicate or transform existing sculpt objects while preserving editability
@@ -86,15 +86,20 @@ A Blender addon that provides advanced mesh editing tools for enhanced modeling 
 
 ## Changelog
 
+### v1.2.5
+- Flex Tool: Added sticky Helix mode (`O`) for non-destructive helix deformation of generated geometry.
+- Flex Tool: Helix magnitude/frequency are now metadata-driven and persist when editing existing flex meshes.
+- Flex Tool: Added local helix editing by activating helix mode while hovering a control point, with interpolation between control points.
+- Flex Tool: Added helix slant control on mouse wheel while in helix mode (global or local), including metadata persistence and HUD display.
+- Flex Tool: MMB while holding `O` now resets helix values and locks further helix input until `O` is released and pressed again.
+- Flex Tool: Increased max length segments to 256.
+
 ### v1.2.4
 - Added Super Orient "Connected Only" support.
-- Fixed delays caused by stacked radius adjustments during Super Orient
-  when proportional mode was enabled.
+- Fixed delays caused by stacked radius adjustments during Super Orient when proportional mode was enabled.
 - Added draw mode to Super Extrude.
-- Fixed orientation centers being incorrectly calculated from selection
-  center instead of selection border.
-- Added cursor UI help to Super Extrude and Super Orient exposing modal
-  hotkeys. Use `H` to toggle help visibility; help defaults to hidden to
+- Fixed orientation centers being incorrectly calculated from selection center instead of selection border.
+- Added cursor UI help to Super Extrude and Super Orient exposing modal hotkeys. Use `H` to toggle help visibility; help defaults to hidden to match behavior, presentation, and formatting used in Flex, Super Duplicate, and Super Transform tools.
   match behavior, presentation, and formatting used in Flex,
   Super Duplicate, and Super Transform tools.
 - Added edge mode to Super Extrude.

@@ -32,6 +32,7 @@ class FlexState:
     # Hotkey configuration (Blender event.type names) - defaults, overridden by addon prefs
     KEY_CANCEL = 'ESC'
     KEY_TWIST = 'T'
+    KEY_HELIX = 'O'
     KEY_PARENT_MODE = 'TAB'
     KEY_MIRROR = 'X'
     KEY_ADAPTIVE = 'A'
@@ -191,11 +192,24 @@ class FlexState:
         # Profile settings
         self.profile_aspect_ratio = 1.0
         self.profile_twist_mode = False
+        self.profile_helix_mode = False
         self.profile_global_twist = 0.0
         self.profile_point_twists = []
         self.twist_dragging_point = -2
         self.twist_drag_start_angle = None
         self.twist_drag_start_mouse = None
+        self.helix_magnitude = 0.0
+        self.helix_frequency = 0.0
+        self.helix_slant = 0.0
+        self.helix_point_magnitudes = []
+        self.helix_point_frequencies = []
+        self.helix_point_slants = []
+        self.helix_edit_point_index = -1
+        self.helix_start_mouse = None
+        self.helix_start_points = []
+        self.helix_start_magnitude = 0.0
+        self.helix_start_frequency = 0.0
+        self.helix_start_slant = 0.0
         
         # Profile type settings
         self.profile_global_type = self.PROFILE_CIRCULAR
@@ -338,10 +352,23 @@ class FlexState:
         self.undo_redo_manager.clear()
         
         self.profile_twist_mode = False
+        self.profile_helix_mode = False
         self.profile_global_twist = 0.0
         self.profile_point_twists = []
         self.twist_dragging_point = -1
         self.twist_drag_start_angle = None
+        self.helix_magnitude = 0.0
+        self.helix_frequency = 0.0
+        self.helix_slant = 0.0
+        self.helix_point_magnitudes = []
+        self.helix_point_frequencies = []
+        self.helix_point_slants = []
+        self.helix_edit_point_index = -1
+        self.helix_start_mouse = None
+        self.helix_start_points = []
+        self.helix_start_magnitude = 0.0
+        self.helix_start_frequency = 0.0
+        self.helix_start_slant = 0.0
         
         self.object_matrix_world = None
         self.current_depth = 10.0
@@ -358,6 +385,25 @@ class FlexState:
     def save_history_state(self):
         """Save the current state to history for undo/redo."""
         self.undo_redo_manager.save_state()
+
+    def ensure_helix_point_arrays(self):
+        """Match helix point arrays to the current control point count."""
+        point_count = len(self.points_3d)
+
+        mags = list(self.helix_point_magnitudes) if self.helix_point_magnitudes else []
+        freqs = list(self.helix_point_frequencies) if self.helix_point_frequencies else []
+        slants = list(self.helix_point_slants) if self.helix_point_slants else []
+
+        if len(mags) < point_count:
+            mags.extend([self.helix_magnitude] * (point_count - len(mags)))
+        if len(freqs) < point_count:
+            freqs.extend([self.helix_frequency] * (point_count - len(freqs)))
+        if len(slants) < point_count:
+            slants.extend([self.helix_slant] * (point_count - len(slants)))
+
+        self.helix_point_magnitudes = mags[:point_count]
+        self.helix_point_frequencies = freqs[:point_count]
+        self.helix_point_slants = slants[:point_count]
     
     def undo_action(self):
         """Undo the last action by restoring a previous state."""
@@ -390,6 +436,12 @@ class UndoRedoManager:
             'profile_twist_mode': self.state.profile_twist_mode,
             'profile_global_twist': self.state.profile_global_twist,
             'profile_point_twists': self.state.profile_point_twists.copy() if self.state.profile_point_twists else [],
+            'helix_magnitude': self.state.helix_magnitude,
+            'helix_frequency': self.state.helix_frequency,
+            'helix_slant': self.state.helix_slant,
+            'helix_point_magnitudes': self.state.helix_point_magnitudes.copy() if self.state.helix_point_magnitudes else [],
+            'helix_point_frequencies': self.state.helix_point_frequencies.copy() if self.state.helix_point_frequencies else [],
+            'helix_point_slants': self.state.helix_point_slants.copy() if self.state.helix_point_slants else [],
             'profile_global_type': self.state.profile_global_type,
             'profile_point_types': self.state.profile_point_types.copy() if self.state.profile_point_types else [],
             'profile_roundness': self.state.profile_roundness,
@@ -433,6 +485,22 @@ class UndoRedoManager:
         self.state.profile_twist_mode = saved_state.get('profile_twist_mode', False)
         self.state.profile_global_twist = saved_state.get('profile_global_twist', 0.0)
         self.state.profile_point_twists = saved_state.get('profile_point_twists', []).copy()
+        self.state.helix_magnitude = saved_state.get('helix_magnitude', 0.0)
+        self.state.helix_frequency = saved_state.get('helix_frequency', 0.0)
+        self.state.helix_slant = saved_state.get('helix_slant', 0.0)
+        self.state.helix_point_magnitudes = saved_state.get(
+            'helix_point_magnitudes',
+            [],
+        ).copy()
+        self.state.helix_point_frequencies = saved_state.get(
+            'helix_point_frequencies',
+            [],
+        ).copy()
+        self.state.helix_point_slants = saved_state.get(
+            'helix_point_slants',
+            [],
+        ).copy()
+        self.state.ensure_helix_point_arrays()
         self.state.profile_global_type = saved_state.get('profile_global_type', FlexState.PROFILE_CIRCULAR)
         self.state.profile_point_types = saved_state.get('profile_point_types', []).copy()
         self.state.profile_roundness = saved_state.get('profile_roundness', 0.3)

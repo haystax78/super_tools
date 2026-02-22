@@ -249,6 +249,21 @@ class MESH_OT_flex_create(FlexOperatorBase):
                 state.profile_aspect_ratio = curve_data.get('profile_aspect_ratio', 1.0)
                 state.profile_global_twist = curve_data.get('profile_global_twist', 0.0)
                 state.profile_point_twists = curve_data.get('profile_point_twists', [])
+                state.helix_magnitude = curve_data.get('helix_magnitude', 0.0)
+                state.helix_frequency = curve_data.get('helix_frequency', 0.0)
+                state.helix_slant = curve_data.get('helix_slant', 0.0)
+                state.helix_point_magnitudes = curve_data.get(
+                    'helix_point_magnitudes',
+                    [],
+                )
+                state.helix_point_frequencies = curve_data.get(
+                    'helix_point_frequencies',
+                    [],
+                )
+                state.helix_point_slants = curve_data.get(
+                    'helix_point_slants',
+                    [],
+                )
                 state.profile_global_type = curve_data.get('profile_global_type', state.PROFILE_CIRCULAR)
                 state.profile_roundness = curve_data.get('profile_roundness', 0.3)
                 state.profile_point_roundness = curve_data.get('profile_point_roundness', [])
@@ -264,6 +279,8 @@ class MESH_OT_flex_create(FlexOperatorBase):
 
                 while len(state.profile_point_twists) < len(state.points_3d):
                     state.profile_point_twists.append(0.0)
+
+                state.ensure_helix_point_arrays()
 
                 if "resolution" in curve_data:
                     self.resolution = curve_data["resolution"]
@@ -687,6 +704,12 @@ class MESH_OT_flex_create(FlexOperatorBase):
                 "profile_aspect_ratio": state.profile_aspect_ratio,
                 "profile_global_twist": state.profile_global_twist,
                 "profile_point_twists": list(state.profile_point_twists),
+                "helix_magnitude": state.helix_magnitude,
+                "helix_frequency": state.helix_frequency,
+                "helix_slant": state.helix_slant,
+                "helix_point_magnitudes": list(state.helix_point_magnitudes),
+                "helix_point_frequencies": list(state.helix_point_frequencies),
+                "helix_point_slants": list(state.helix_point_slants),
                 "profile_global_type": state.profile_global_type,
                 "profile_roundness": state.profile_roundness,
                 "profile_point_roundness": list(state.profile_point_roundness),

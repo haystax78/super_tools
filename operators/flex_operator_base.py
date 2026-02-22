@@ -32,7 +32,7 @@ class FlexOperatorBase(bpy.types.Operator):
         description="Number of segments along the length of the curve",
         default=32,
         min=8,
-        max=128
+        max=256
     )
     
     @classmethod
@@ -334,6 +334,12 @@ class FlexOperatorBase(bpy.types.Operator):
         state.points_3d.append(new_point_3d)
         state.point_radii_3d.append(state.DEFAULT_RADIUS)
         state.point_tensions.append(0.5)
+        if hasattr(state, 'helix_point_magnitudes'):
+            state.helix_point_magnitudes.append(state.helix_magnitude)
+        if hasattr(state, 'helix_point_frequencies'):
+            state.helix_point_frequencies.append(state.helix_frequency)
+        if hasattr(state, 'helix_point_slants'):
+            state.helix_point_slants.append(state.helix_slant)
         if hasattr(state, 'profile_point_twists'):
             state.profile_point_twists.append(0.0)
         if hasattr(state, 'profile_point_roundness'):
@@ -377,6 +383,27 @@ class FlexOperatorBase(bpy.types.Operator):
             state.points_3d.insert(0, new_point)
             state.point_radii_3d.insert(0, state.point_radii_3d[0] if state.point_radii_3d else state.DEFAULT_RADIUS)
             state.point_tensions.insert(0, 0.5)
+            if hasattr(state, 'helix_point_magnitudes'):
+                base_mag = (
+                    state.helix_point_magnitudes[0]
+                    if state.helix_point_magnitudes
+                    else state.helix_magnitude
+                )
+                state.helix_point_magnitudes.insert(0, base_mag)
+            if hasattr(state, 'helix_point_frequencies'):
+                base_freq = (
+                    state.helix_point_frequencies[0]
+                    if state.helix_point_frequencies
+                    else state.helix_frequency
+                )
+                state.helix_point_frequencies.insert(0, base_freq)
+            if hasattr(state, 'helix_point_slants'):
+                base_slant = (
+                    state.helix_point_slants[0]
+                    if state.helix_point_slants
+                    else state.helix_slant
+                )
+                state.helix_point_slants.insert(0, base_slant)
             if hasattr(state, 'profile_point_twists'):
                 state.profile_point_twists.insert(0, 0.0)
             if hasattr(state, 'profile_point_roundness'):
@@ -387,6 +414,27 @@ class FlexOperatorBase(bpy.types.Operator):
             state.points_3d.append(new_point)
             state.point_radii_3d.append(state.point_radii_3d[-1] if state.point_radii_3d else state.DEFAULT_RADIUS)
             state.point_tensions.append(0.5)
+            if hasattr(state, 'helix_point_magnitudes'):
+                base_mag = (
+                    state.helix_point_magnitudes[-1]
+                    if state.helix_point_magnitudes
+                    else state.helix_magnitude
+                )
+                state.helix_point_magnitudes.append(base_mag)
+            if hasattr(state, 'helix_point_frequencies'):
+                base_freq = (
+                    state.helix_point_frequencies[-1]
+                    if state.helix_point_frequencies
+                    else state.helix_frequency
+                )
+                state.helix_point_frequencies.append(base_freq)
+            if hasattr(state, 'helix_point_slants'):
+                base_slant = (
+                    state.helix_point_slants[-1]
+                    if state.helix_point_slants
+                    else state.helix_slant
+                )
+                state.helix_point_slants.append(base_slant)
             if hasattr(state, 'profile_point_twists'):
                 state.profile_point_twists.append(0.0)
             if hasattr(state, 'profile_point_roundness'):
