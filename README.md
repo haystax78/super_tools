@@ -2,7 +2,7 @@
 
 A Blender addon that provides advanced mesh editing tools for enhanced modeling workflows.
 
-## What's New in v1.2.5
+## What's New in v1.2.6
 
 - **Super Duplicate & Super Transform**: New modal operators for transforming sculpt objects
   - Duplicate or transform existing sculpt objects while preserving editability
@@ -85,6 +85,18 @@ A Blender addon that provides advanced mesh editing tools for enhanced modeling 
 - Blender 4.5 or later
 
 ## Changelog
+
+### v1.2.6
+- Flex Tool: Improved helix profile blending between per-point values using
+  smoother cubic interpolation to preserve tangency across segments.
+- Flex Tool: Global helix adjustments now apply additive deltas instead of
+  overwriting per-point values, preserving local offsets.
+- Flex Tool: Global helix frequency reduction now continues to reduce
+  remaining non-zero points even when some points are already clamped at 0.
+- Flex Tool: Helix key (`O`) is now consumed by the modal so it no longer
+  toggles Blender proportional editing while adjusting helix values.
+- Flex Tool: Increased max length segments to 512 (property, wheel clamp,
+  and preference bound).
 
 ### v1.2.5
 - Flex Tool: Added sticky Helix mode (`O`) for non-destructive helix deformation of generated geometry.

@@ -210,8 +210,13 @@ class FlexState:
         self.helix_start_magnitude = 0.0
         self.helix_start_frequency = 0.0
         self.helix_start_slant = 0.0
-        
-        # Profile type settings
+        self.helix_start_point_magnitudes = []
+        self.helix_start_point_frequencies = []
+        self.helix_start_point_slants = []
+        self.profile_global_type = self.PROFILE_CIRCULAR
+        self.profile_point_types = []
+        self.profile_roundness = 0.3
+        self.profile_point_roundness = []
         self.profile_global_type = self.PROFILE_CIRCULAR
         self.profile_point_types = []
         self.profile_roundness = 0.3
@@ -369,6 +374,9 @@ class FlexState:
         self.helix_start_magnitude = 0.0
         self.helix_start_frequency = 0.0
         self.helix_start_slant = 0.0
+        self.helix_start_point_magnitudes = []
+        self.helix_start_point_frequencies = []
+        self.helix_start_point_slants = []
         
         self.object_matrix_world = None
         self.current_depth = 10.0

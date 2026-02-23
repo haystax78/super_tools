@@ -32,7 +32,7 @@ class FlexOperatorBase(bpy.types.Operator):
         description="Number of segments along the length of the curve",
         default=32,
         min=8,
-        max=256
+        max=512
     )
     
     @classmethod

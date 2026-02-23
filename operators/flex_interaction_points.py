@@ -432,10 +432,8 @@ def handle_mouse_move(operator, context, event):
             -100.0,
             min(100.0, start_mag + (dx * mag_sensitivity)),
         )
-        new_freq = max(
-            0.0,
-            min(100.0, start_freq + (dy * freq_sensitivity)),
-        )
+        raw_freq = start_freq + (dy * freq_sensitivity)
+        new_freq = max(0.0, min(100.0, raw_freq))
 
         edit_idx = getattr(state, 'helix_edit_point_index', -1)
         if 0 <= edit_idx < len(state.points_3d):
@@ -444,12 +442,32 @@ def handle_mouse_move(operator, context, event):
             state.helix_magnitude = new_mag
             state.helix_frequency = new_freq
         else:
+            delta_mag = new_mag - start_mag
+            delta_freq = raw_freq - start_freq
+            start_mags = getattr(state, 'helix_start_point_magnitudes', [])
+            start_freqs = getattr(state, 'helix_start_point_frequencies', [])
             state.helix_magnitude = new_mag
             state.helix_frequency = new_freq
             for idx in range(len(state.helix_point_magnitudes)):
-                state.helix_point_magnitudes[idx] = new_mag
+                base_mag = (
+                    start_mags[idx]
+                    if idx < len(start_mags)
+                    else state.helix_point_magnitudes[idx]
+                )
+                state.helix_point_magnitudes[idx] = max(
+                    -100.0,
+                    min(100.0, base_mag + delta_mag),
+                )
             for idx in range(len(state.helix_point_frequencies)):
-                state.helix_point_frequencies[idx] = new_freq
+                base_freq = (
+                    start_freqs[idx]
+                    if idx < len(start_freqs)
+                    else state.helix_point_frequencies[idx]
+                )
+                state.helix_point_frequencies[idx] = max(
+                    0.0,
+                    min(100.0, base_freq + delta_freq),
+                )
 
         if len(state.points_3d) >= 2 and len(state.point_radii_3d) >= 2:
             mesh_utils.update_preview_mesh(

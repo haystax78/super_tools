@@ -11,7 +11,7 @@ from . import flex_conversion as conversion
 
 
 def _sample_helix_profile(control_t_values, control_values, target_t):
-    """Linearly sample helix profile values between control points."""
+    """Sample helix profile values using smooth cubic interpolation."""
     if not control_values:
         return 0.0
     if len(control_values) == 1:
@@ -21,6 +21,7 @@ def _sample_helix_profile(control_t_values, control_values, target_t):
     if target_t >= control_t_values[-1]:
         return float(control_values[-1])
 
+    last_idx = len(control_t_values) - 1
     for idx in range(1, len(control_t_values)):
         t0 = control_t_values[idx - 1]
         t1 = control_t_values[idx]
@@ -30,8 +31,32 @@ def _sample_helix_profile(control_t_values, control_values, target_t):
             denom = t1 - t0
             if abs(denom) <= 1e-8:
                 return v1
-            blend = (target_t - t0) / denom
-            return (v0 * (1.0 - blend)) + (v1 * blend)
+
+            prev_idx = max(0, idx - 2)
+            next_idx = min(last_idx, idx + 1)
+            t_prev = control_t_values[prev_idx]
+            t_next = control_t_values[next_idx]
+            v_prev = float(control_values[prev_idx])
+            v_next = float(control_values[next_idx])
+
+            denom_prev = max(1e-8, t1 - t_prev)
+            denom_next = max(1e-8, t_next - t0)
+            slope0 = (v1 - v_prev) / denom_prev
+            slope1 = (v_next - v0) / denom_next
+
+            u = (target_t - t0) / denom
+            u2 = u * u
+            u3 = u2 * u
+            h00 = (2.0 * u3) - (3.0 * u2) + 1.0
+            h10 = u3 - (2.0 * u2) + u
+            h01 = (-2.0 * u3) + (3.0 * u2)
+            h11 = u3 - u2
+            return (
+                (h00 * v0)
+                + (h10 * denom * slope0)
+                + (h01 * v1)
+                + (h11 * denom * slope1)
+            )
 
     return float(control_values[-1])
 
