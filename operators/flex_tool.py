@@ -32,6 +32,32 @@ class MESH_OT_flex_create(FlexOperatorBase):
     def draw_callback_px(self, context, _unused=None):
         """Draw the curve points and lines in the viewport"""
         flex_drawing.draw_callback_px(self, context)
+
+    def _get_flex_prefs(self):
+        """Return addon preferences for flex settings when available."""
+        try:
+            addon_prefs = bpy.context.preferences.addons.get("super_tools")
+            if addon_prefs:
+                return addon_prefs.preferences
+        except Exception:
+            pass
+        return None
+
+    def _apply_operator_defaults_from_prefs(self):
+        """Apply persisted operator defaults from addon preferences."""
+        prefs = self._get_flex_prefs()
+        if prefs is None:
+            return
+
+        self.resolution = int(
+            getattr(prefs, 'flex_default_resolution', self.resolution)
+        )
+        self.segments = int(
+            getattr(prefs, 'flex_default_segments', self.segments)
+        )
+        self.generate_uv = bool(
+            getattr(prefs, 'flex_default_generate_uv', False)
+        )
     
     def invoke(self, context, event):
         """Initialize the operator when it's invoked"""
@@ -59,6 +85,7 @@ class MESH_OT_flex_create(FlexOperatorBase):
     def _invoke_create_mode(self, context, event):
         """Initialize for creating a new flex mesh"""
         state.initialize()
+        self._apply_operator_defaults_from_prefs()
         load_custom_profiles_from_scene()
         state.is_running = True
         self._editing_existing = False
@@ -149,6 +176,7 @@ class MESH_OT_flex_create(FlexOperatorBase):
     def _invoke_edit_mode(self, context, event, edit_target):
         """Initialize for editing an existing flex mesh"""
         state.initialize()
+        self._apply_operator_defaults_from_prefs()
         load_custom_profiles_from_scene()
         state.is_running = True
         self._editing_existing = True
@@ -471,6 +499,7 @@ class MESH_OT_flex_create(FlexOperatorBase):
             state.point_radii_3d,
             resolution=self.resolution,
             segments=self.segments,
+            generate_uv=self.generate_uv,
             tensions=state.point_tensions,
             no_tangent_points=state.no_tangent_points,
             is_preview=False

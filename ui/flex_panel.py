@@ -48,6 +48,7 @@ class VIEW3D_PT_flex_panel(bpy.types.Panel):
         if prefs:
             col.prop(prefs, "flex_default_bspline_mode")
             col.prop(prefs, "flex_default_cap_type")
+            col.prop(prefs, "flex_default_generate_uv")
             col.prop(prefs, "flex_add_smooth_by_angle")
             row = col.row()
             row.enabled = getattr(prefs, 'flex_add_smooth_by_angle', False)

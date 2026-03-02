@@ -328,6 +328,11 @@ class SuperToolsPreferences(bpy.types.AddonPreferences):
         ],
         default='HEMISPHERE'
     )
+    flex_default_generate_uv: bpy.props.BoolProperty(
+        name="Generate UV (Default)",
+        description="Generate UVs by default when finalizing flex meshes",
+        default=False
+    )
     flex_add_smooth_by_angle: bpy.props.BoolProperty(
         name="Add Smooth by Angle",
         description="Add Smooth by Angle modifier to new flex meshes",
@@ -471,6 +476,7 @@ class SuperToolsPreferences(bpy.types.AddonPreferences):
         col.label(text="Behavior:")
         col.prop(self, "flex_default_bspline_mode")
         col.prop(self, "flex_default_cap_type")
+        col.prop(self, "flex_default_generate_uv")
         col.prop(self, "flex_add_smooth_by_angle")
         row = col.row()
         row.enabled = self.flex_add_smooth_by_angle

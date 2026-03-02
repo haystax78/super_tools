@@ -2,23 +2,15 @@
 
 A Blender addon that provides advanced mesh editing tools for enhanced modeling workflows.
 
-## What's New in v1.2.6
+## What's New in v1.2.7
 
-- **Super Duplicate & Super Transform**: New modal operators for transforming sculpt objects
-  - Duplicate or transform existing sculpt objects while preserving editability
-  - Visual transform center (white circle) that can be repositioned with Space key
-  - Modal hotkeys: Move (G), Rotate (R), Scale (S), Mirror axes (X/Y/Z)
-  - Sticky R/S keys: Hold to activate, release to return to move mode
-  - Flex mesh support: Transforms object instead of vertices to maintain editability
-  - Configurable hotkeys in addon preferences (invoke and modal keys)
-  - Mirror modifier support with "SD Mirror" modifier and "sd_mirror_empty" object
-- **Flex Tool Enhancements**:
-  - Available directly from Sculpt mode
-  - Automatically edits existing flex meshes when invoked from Sculpt mode
-  - Proper mode restoration (returns to Sculpt mode after operation)
-- **Bug fixes**:
-  - Fixed Flex tool not returning to Sculpt mode after completion/cancellation
-  - Improved mode switching and restoration across all operators
+- **Flex Tool UV Generation**:
+  - Added optional automatic UV generation for finalized Flex meshes.
+  - Tube UVs are generated as a grid: U wraps around the profile and
+    V runs from curve start (0) to end (1).
+  - Start and end caps are mapped into separate UV islands.
+  - UV generation is controlled by a new **Generate UV** toggle.
+  - Generate UV defaults to OFF and is remembered via addon preferences.
 
 ## Features
 
@@ -85,6 +77,14 @@ A Blender addon that provides advanced mesh editing tools for enhanced modeling 
 - Blender 4.5 or later
 
 ## Changelog
+
+### v1.2.7
+- Flex Tool: Added optional UV generation when finalizing meshes.
+- Flex Tool: Tube UVs now use a profile-wrap/grid layout with V mapped
+  from curve start to end.
+- Flex Tool: Start/end cap UVs now map into separate islands.
+- Flex Tool: Added Generate UV option in Flex settings and addon
+  preferences (default OFF, preference-backed).
 
 ### v1.2.6
 - Flex Tool: Improved helix profile blending between per-point values using

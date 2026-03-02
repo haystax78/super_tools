@@ -34,6 +34,19 @@ class FlexOperatorBase(bpy.types.Operator):
         min=8,
         max=512
     )
+    generate_uv: bpy.props.BoolProperty(
+        name="Generate UV",
+        description="Generate UVs when finalizing the flex mesh",
+        default=False
+    )
+
+    def draw(self, context):
+        """Draw Flex mesh options in operator properties/redo panel."""
+        layout = self.layout
+        col = layout.column(align=True)
+        col.prop(self, "resolution")
+        col.prop(self, "segments")
+        col.prop(self, "generate_uv")
     
     @classmethod
     def poll(cls, context):

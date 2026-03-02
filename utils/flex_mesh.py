@@ -651,10 +651,171 @@ def fill_boundary_loops(mesh, fill_boundaries):
     bm.free()
 
 
+def apply_tube_grid_uvs(
+    mesh,
+    tube_face_count,
+    tube_resolution,
+    tube_ring_count,
+    u_offset=0.0,
+    u_scale=1.0,
+):
+    """Assign a grid UV layout to tube faces from start to end of curve.
+
+    The tube unwrap is deterministic:
+    - U runs around the profile ring.
+    - V runs along length segments from start (0.0, bottom) to end (1.0).
+    """
+    if (
+        mesh is None
+        or tube_face_count <= 0
+        or tube_resolution <= 0
+        or tube_ring_count < 2
+    ):
+        return
+
+    uv_layer = mesh.uv_layers.get("UVMap")
+    if uv_layer is None:
+        uv_layer = mesh.uv_layers.new(name="UVMap")
+    uv_data = uv_layer.data
+
+    max_faces = min(tube_face_count, len(mesh.polygons))
+    denom_v = float(tube_ring_count - 1)
+
+    for face_index in range(max_faces):
+        poly = mesh.polygons[face_index]
+        if len(poly.loop_indices) != 4:
+            continue
+
+        ring_index = face_index // tube_resolution
+        ring_col = face_index % tube_resolution
+
+        u0 = u_offset + (u_scale * ring_col / float(tube_resolution))
+        u1 = u_offset + (u_scale * (ring_col + 1) / float(tube_resolution))
+        v0 = ring_index / denom_v
+        v1 = (ring_index + 1) / denom_v
+
+        loop_indices = poly.loop_indices
+        uv_data[loop_indices[0]].uv = (u0, v0)
+        uv_data[loop_indices[1]].uv = (u1, v0)
+        uv_data[loop_indices[2]].uv = (u1, v1)
+        uv_data[loop_indices[3]].uv = (u0, v1)
+
+
+def apply_cap_island_uvs(
+    mesh,
+    face_start,
+    face_count,
+    center,
+    axis_u,
+    axis_v,
+    radius,
+    island_u_offset,
+    island_u_scale,
+):
+    """Map cap faces into a separate UV island using projected disc coords."""
+    if mesh is None or face_count <= 0:
+        return
+
+    uv_layer = mesh.uv_layers.get("UVMap")
+    if uv_layer is None:
+        return
+    uv_data = uv_layer.data
+
+    safe_radius = radius if abs(radius) > 1e-8 else 1.0
+    axis_u = axis_u.normalized()
+    axis_v = axis_v.normalized()
+
+    max_face = min(face_start + face_count, len(mesh.polygons))
+    for face_index in range(max(0, face_start), max_face):
+        poly = mesh.polygons[face_index]
+        for loop_idx, vert_idx in zip(poly.loop_indices, poly.vertices):
+            vert_co = mesh.vertices[vert_idx].co
+            delta = vert_co - center
+            local_u = 0.5 + (0.5 * delta.dot(axis_u) / safe_radius)
+            local_v = 0.5 + (0.5 * delta.dot(axis_v) / safe_radius)
+            local_u = max(0.0, min(1.0, local_u))
+            local_v = max(0.0, min(1.0, local_v))
+            uv_data[loop_idx].uv = (
+                island_u_offset + (local_u * island_u_scale),
+                local_v,
+            )
+
+
+def apply_cap_island_uvs_by_proximity(
+    mesh,
+    face_start,
+    start_center,
+    start_axis_u,
+    start_axis_v,
+    start_radius,
+    start_island_u_offset,
+    start_island_u_scale,
+    end_center,
+    end_axis_u,
+    end_axis_v,
+    end_radius,
+    end_island_u_offset,
+    end_island_u_scale,
+):
+    """Map cap-region faces by assigning each face to nearest cap center."""
+    if mesh is None:
+        return
+
+    uv_layer = mesh.uv_layers.get("UVMap")
+    if uv_layer is None:
+        return
+    uv_data = uv_layer.data
+
+    start_axis_u = start_axis_u.normalized()
+    start_axis_v = start_axis_v.normalized()
+    end_axis_u = end_axis_u.normalized()
+    end_axis_v = end_axis_v.normalized()
+    safe_start_radius = start_radius if abs(start_radius) > 1e-8 else 1.0
+    safe_end_radius = end_radius if abs(end_radius) > 1e-8 else 1.0
+
+    for face_index in range(max(0, face_start), len(mesh.polygons)):
+        poly = mesh.polygons[face_index]
+        if not poly.vertices:
+            continue
+
+        centroid = Vector((0.0, 0.0, 0.0))
+        for vert_idx in poly.vertices:
+            centroid += mesh.vertices[vert_idx].co
+        centroid /= float(len(poly.vertices))
+
+        is_start = (centroid - start_center).length <= (centroid - end_center).length
+        if is_start:
+            center = start_center
+            axis_u = start_axis_u
+            axis_v = start_axis_v
+            radius = safe_start_radius
+            island_u_offset = start_island_u_offset
+            island_u_scale = start_island_u_scale
+        else:
+            center = end_center
+            axis_u = end_axis_u
+            axis_v = end_axis_v
+            radius = safe_end_radius
+            island_u_offset = end_island_u_offset
+            island_u_scale = end_island_u_scale
+
+        for loop_idx, vert_idx in zip(poly.loop_indices, poly.vertices):
+            vert_co = mesh.vertices[vert_idx].co
+            delta = vert_co - center
+            local_u = 0.5 + (0.5 * delta.dot(axis_u) / radius)
+            local_v = 0.5 + (0.5 * delta.dot(axis_v) / radius)
+            local_u = max(0.0, min(1.0, local_u))
+            local_v = max(0.0, min(1.0, local_v))
+            uv_data[loop_idx].uv = (
+                island_u_offset + (local_u * island_u_scale),
+                local_v,
+            )
+
+
 def create_flex_mesh(curve_points, radii, resolution=16, cap_segments=4, original_control_points=None, original_radii=None, aspect_ratio=1.0, global_twist=0.0, point_twists=None, start_cap_type=1, end_cap_type=1):
     """Create a flex mesh tube with configurable end caps."""
     if len(curve_points) < 2 or len(radii) < 2:
-        return [], [], []
+        return [], [], [], {}
     
     tube_vertices, tube_faces, actual_resolution = create_tube_mesh(
         curve_points, 
@@ -685,9 +846,12 @@ def create_flex_mesh(curve_points, radii, resolution=16, cap_segments=4, origina
     tube_start_ring = [tube_vertices[i] for i in range(resolution)]
     tube_end_ring = [tube_vertices[-resolution + i] for i in range(resolution)]
 
+    start_point = curve_points[0]
+    end_point = curve_points[-1]
+    start_radius = radii[0]
+    end_radius = radii[-1]
+
     if start_cap_type > 0:
-        start_point = curve_points[0]
-        start_radius = radii[0]
         start_twist = global_twist
         if point_twists and len(point_twists) > 0:
             start_twist += point_twists[0]
@@ -708,8 +872,6 @@ def create_flex_mesh(curve_points, radii, resolution=16, cap_segments=4, origina
                 resolution, False, seam_ring=tube_start_ring, twist_angle=start_twist, aspect_ratio=aspect_ratio, roundness=start_roundness, use_fill=use_fill)
 
     if end_cap_type > 0:
-        end_point = curve_points[-1]
-        end_radius = radii[-1]
         end_twist = global_twist
         if point_twists and len(point_twists) > 0:
             end_twist += point_twists[-1]
@@ -734,7 +896,10 @@ def create_flex_mesh(curve_points, radii, resolution=16, cap_segments=4, origina
     for face in tube_faces:
         faces.append([v + tube_offset for v in face])
     
+    start_cap_face_start = -1
+    start_cap_face_count = 0
     if state.start_cap_type > 0:
+        start_cap_face_start = len(faces)
         start_cap_internal_offset = len(vertices)
         
         if state.start_cap_type == 1:
@@ -763,8 +928,13 @@ def create_flex_mesh(curve_points, radii, resolution=16, cap_segments=4, origina
                         border_idx = v_idx - 1
                         remapped_face.append(tube_offset + border_idx)
                 faces.append(remapped_face)
-    
+
+        start_cap_face_count = len(faces) - start_cap_face_start
+
+    end_cap_face_start = -1
+    end_cap_face_count = 0
     if state.end_cap_type > 0:
+        end_cap_face_start = len(faces)
         end_cap_internal_offset = len(vertices)
         
         if state.end_cap_type == 1:
@@ -796,6 +966,8 @@ def create_flex_mesh(curve_points, radii, resolution=16, cap_segments=4, origina
                         remapped_face.append(tube_offset + tube_end_start + border_idx)
                 faces.append(remapped_face)
     
+        end_cap_face_count = len(faces) - end_cap_face_start
+
     fill_boundaries = []
     is_custom_profile = (state.profile_global_type == state.PROFILE_CUSTOM)
     
@@ -808,10 +980,29 @@ def create_flex_mesh(curve_points, radii, resolution=16, cap_segments=4, origina
         end_boundary = list(range(tube_end_start, tube_end_start + resolution))
         fill_boundaries.append(('end', end_boundary))
     
-    return vertices, faces, fill_boundaries
+    mesh_info = {
+        "tube_face_count": len(tube_faces),
+        "tube_resolution": resolution,
+        "tube_ring_count": len(curve_points),
+        "start_cap_face_start": start_cap_face_start,
+        "start_cap_face_count": start_cap_face_count,
+        "end_cap_face_start": end_cap_face_start,
+        "end_cap_face_count": end_cap_face_count,
+        "start_cap_center": start_point.copy(),
+        "start_cap_side": start_side.copy(),
+        "start_cap_up": start_up.copy(),
+        "start_cap_radius": float(start_radius),
+        "end_cap_center": end_point.copy(),
+        "end_cap_side": end_side.copy(),
+        "end_cap_up": end_up.copy(),
+        "end_cap_radius": float(end_radius),
+        "start_cap_enabled": int(start_cap_type > 0),
+        "end_cap_enabled": int(end_cap_type > 0),
+    }
+    return vertices, faces, fill_boundaries, mesh_info
 
 
-def create_flex_mesh_from_curve(context, curve_points_3d, radii_3d, resolution=16, segments=32, tensions=None, no_tangent_points=None, is_preview=False):
+def create_flex_mesh_from_curve(context, curve_points_3d, radii_3d, resolution=16, segments=32, generate_uv=False, tensions=None, no_tangent_points=None, is_preview=False):
     """Create a flex mesh that follows the curve with varying thickness."""
     if len(curve_points_3d) < 2 or len(radii_3d) < 2:
         return None
@@ -965,7 +1156,7 @@ def create_flex_mesh_from_curve(context, curve_points_3d, radii_3d, resolution=1
         original_control_points=curve_points_3d,
     )
 
-    vertices, faces, fill_boundaries = create_flex_mesh(
+    vertices, faces, fill_boundaries, mesh_info = create_flex_mesh(
         helix_curve_points,
         smooth_radii_3d,
         resolution=resolution,
@@ -984,6 +1175,94 @@ def create_flex_mesh_from_curve(context, curve_points_3d, radii_3d, resolution=1
     
     if fill_boundaries:
         fill_boundary_loops(mesh, fill_boundaries)
+
+    if generate_uv and not is_preview:
+        has_cap_mesh = bool(
+            mesh_info.get("start_cap_enabled", 0)
+            or mesh_info.get("end_cap_enabled", 0)
+        )
+        if has_cap_mesh:
+            tube_u_scale = 0.75
+            start_cap_u_offset = 0.75
+            start_cap_u_scale = 0.125
+            end_cap_u_offset = 0.875
+            end_cap_u_scale = 0.125
+        else:
+            tube_u_scale = 1.0
+            start_cap_u_offset = 0.0
+            start_cap_u_scale = 0.0
+            end_cap_u_offset = 0.0
+            end_cap_u_scale = 0.0
+
+        apply_tube_grid_uvs(
+            mesh,
+            tube_face_count=mesh_info.get("tube_face_count", 0),
+            tube_resolution=mesh_info.get("tube_resolution", 0),
+            tube_ring_count=mesh_info.get("tube_ring_count", 0),
+            u_offset=0.0,
+            u_scale=tube_u_scale,
+        )
+
+        if mesh_info.get("start_cap_face_count", 0) > 0:
+            apply_cap_island_uvs(
+                mesh,
+                face_start=mesh_info.get("start_cap_face_start", -1),
+                face_count=mesh_info.get("start_cap_face_count", 0),
+                center=mesh_info.get("start_cap_center", Vector((0, 0, 0))),
+                axis_u=mesh_info.get("start_cap_side", Vector((1, 0, 0))),
+                axis_v=mesh_info.get("start_cap_up", Vector((0, 1, 0))),
+                radius=mesh_info.get("start_cap_radius", 1.0),
+                island_u_offset=start_cap_u_offset,
+                island_u_scale=start_cap_u_scale,
+            )
+
+        if mesh_info.get("end_cap_face_count", 0) > 0:
+            apply_cap_island_uvs(
+                mesh,
+                face_start=mesh_info.get("end_cap_face_start", -1),
+                face_count=mesh_info.get("end_cap_face_count", 0),
+                center=mesh_info.get("end_cap_center", Vector((0, 0, 0))),
+                axis_u=mesh_info.get("end_cap_side", Vector((1, 0, 0))),
+                axis_v=mesh_info.get("end_cap_up", Vector((0, 1, 0))),
+                radius=mesh_info.get("end_cap_radius", 1.0),
+                island_u_offset=end_cap_u_offset,
+                island_u_scale=end_cap_u_scale,
+            )
+
+            apply_cap_island_uvs_by_proximity(
+                mesh,
+                face_start=mesh_info.get("tube_face_count", 0),
+                start_center=mesh_info.get(
+                    "start_cap_center",
+                    Vector((0.0, 0.0, 0.0)),
+                ),
+                start_axis_u=mesh_info.get(
+                    "start_cap_side",
+                    Vector((1.0, 0.0, 0.0)),
+                ),
+                start_axis_v=mesh_info.get(
+                    "start_cap_up",
+                    Vector((0.0, 1.0, 0.0)),
+                ),
+                start_radius=mesh_info.get("start_cap_radius", 1.0),
+                start_island_u_offset=start_cap_u_offset,
+                start_island_u_scale=start_cap_u_scale,
+                end_center=mesh_info.get(
+                    "end_cap_center",
+                    Vector((0.0, 0.0, 0.0)),
+                ),
+                end_axis_u=mesh_info.get(
+                    "end_cap_side",
+                    Vector((1.0, 0.0, 0.0)),
+                ),
+                end_axis_v=mesh_info.get(
+                    "end_cap_up",
+                    Vector((0.0, 1.0, 0.0)),
+                ),
+                end_radius=mesh_info.get("end_cap_radius", 1.0),
+                end_island_u_offset=end_cap_u_offset,
+                end_island_u_scale=end_cap_u_scale,
+            )
     
     mesh.update()
     
@@ -1173,7 +1452,7 @@ def update_preview_mesh(context, curve_points_3d, radii_3d, resolution=16, segme
                 original_control_points=curve_points_3d,
             )
 
-            vertices, faces, fill_boundaries = create_flex_mesh(
+            vertices, faces, fill_boundaries, _mesh_info = create_flex_mesh(
                 helix_curve_points,
                 smooth_radii_3d, 
                 resolution=resolution, 
@@ -1225,7 +1504,7 @@ def update_preview_mesh(context, curve_points_3d, radii_3d, resolution=16, segme
                 original_control_points=curve_points_3d,
             )
 
-            vertices, faces, fill_boundaries = create_flex_mesh(
+            vertices, faces, fill_boundaries, _mesh_info = create_flex_mesh(
                 helix_curve_points,
                 smooth_radii_3d,
                 resolution=resolution,
