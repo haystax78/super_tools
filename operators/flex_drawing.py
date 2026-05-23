@@ -306,7 +306,9 @@ class CursorHUD:
 
         start_cap = int(getattr(state, 'start_cap_type', 1))
         end_cap = int(getattr(state, 'end_cap_type', 1))
-        if start_cap == end_cap:
+        if start_cap == 3 or end_cap == 3:
+            cap_label = 'Closed Loop'
+        elif start_cap == end_cap:
             if start_cap <= 0:
                 cap_label = 'None'
             elif start_cap == 1:

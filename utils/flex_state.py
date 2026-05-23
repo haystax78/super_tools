@@ -149,7 +149,7 @@ class FlexState:
         self.construction_plane_origin = None
         self.construction_plane_normal = None
         
-        # Cap types: 0=None, 1=Hemisphere, 2=Planar
+        # Cap types: 0=None, 1=Hemisphere, 2=Planar, 3=Closed Loop
         # Load default cap type from preferences
         default_cap = 1  # Default to Hemisphere
         if prefs:

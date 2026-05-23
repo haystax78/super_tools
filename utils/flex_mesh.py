@@ -79,21 +79,26 @@ def _apply_helix_to_curve_points(curve_points, original_control_points=None):
         curve_points,
     )
 
+    is_closed_loop = (getattr(state, 'start_cap_type', 1) == 3 or getattr(state, 'end_cap_type', 1) == 3)
+
     control_points = (
         original_control_points
         if original_control_points and len(original_control_points) >= 2
         else curve_points
     )
+    n_ctrl = len(control_points)
+    n_ctrl_segs = n_ctrl if is_closed_loop else n_ctrl - 1
     control_lengths = [0.0]
-    for idx in range(1, len(control_points)):
-        seg_len = (control_points[idx] - control_points[idx - 1]).length
+    for idx in range(n_ctrl_segs):
+        next_idx = (idx + 1) % n_ctrl
+        seg_len = (control_points[next_idx] - control_points[idx]).length
         control_lengths.append(control_lengths[-1] + seg_len)
     control_total = control_lengths[-1]
     if control_total > 1e-8:
         control_t_values = [length / control_total for length in control_lengths]
     else:
-        count = max(1, len(control_points) - 1)
-        control_t_values = [idx / count for idx in range(len(control_points))]
+        count = max(1, n_ctrl_segs)
+        control_t_values = [i / count for i in range(n_ctrl_segs + 1)]
 
     point_mags = list(getattr(state, 'helix_point_magnitudes', []) or [])
     point_freqs = list(getattr(state, 'helix_point_frequencies', []) or [])
@@ -117,6 +122,14 @@ def _apply_helix_to_curve_points(curve_points, original_control_points=None):
     point_mags = point_mags[:control_count]
     point_freqs = point_freqs[:control_count]
     point_slants = point_slants[:control_count]
+
+    if is_closed_loop:
+        point_mags = point_mags + [point_mags[0]]
+        point_freqs = point_freqs + [point_freqs[0]]
+        point_slants = point_slants + [point_slants[0]]
+        closing_seg = (curve_points[0] - curve_points[-1]).length
+        if total_length > 1e-8:
+            total_length = total_length + closing_seg
 
     if (
         all(abs(float(val)) <= 1e-8 for val in point_mags)
@@ -419,15 +432,15 @@ def generate_profile_vertices(profile_type, center, radius, side, up, resolution
         return create_circle_vertices(center, radius, direction, up, side, resolution, twist_angle, aspect_ratio)
 
 
-def create_tube_mesh(curve_points, radii, resolution=16, original_control_points=None, original_radii=None, aspect_ratio=1.0, global_twist=0.0, point_twists=None):
+def create_tube_mesh(curve_points, radii, resolution=16, original_control_points=None, original_radii=None, aspect_ratio=1.0, global_twist=0.0, point_twists=None, is_closed=False):
     """Create a tube mesh following a curve with varying radius."""
     if len(curve_points) < 2 or len(radii) < 2:
         return [], [], 0
-    
+
     if hasattr(create_tube_mesh, '_smooth_roundness_cache'):
         create_tube_mesh._smooth_roundness_cache = None
-    
-    coordinate_systems = math_utils.create_consistent_coordinate_systems(curve_points)
+
+    coordinate_systems = math_utils.create_consistent_coordinate_systems(curve_points, is_closed=is_closed)
     
     all_original_control_points = original_control_points
     all_original_radii = original_radii
@@ -438,7 +451,8 @@ def create_tube_mesh(curve_points, radii, resolution=16, original_control_points
         smooth_twists = math_utils.calculate_smooth_twists(
             original_control_points, 
             point_twists, 
-            curve_points
+            curve_points,
+            is_closed=is_closed
         )
     else:
         smooth_twists = [0.0] * len(curve_points)
@@ -469,7 +483,8 @@ def create_tube_mesh(curve_points, radii, resolution=16, original_control_points
                 create_tube_mesh._smooth_roundness_cache = math_utils.calculate_smooth_roundness(
                     all_original_control_points,
                     state.profile_point_roundness,
-                    curve_points
+                    curve_points,
+                    is_closed=is_closed
                 )
             
             if i < len(create_tube_mesh._smooth_roundness_cache):
@@ -816,16 +831,19 @@ def create_flex_mesh(curve_points, radii, resolution=16, cap_segments=4, origina
     """Create a flex mesh tube with configurable end caps."""
     if len(curve_points) < 2 or len(radii) < 2:
         return [], [], [], {}
-    
+
+    is_closed_loop = (start_cap_type == 3 or end_cap_type == 3)
+
     tube_vertices, tube_faces, actual_resolution = create_tube_mesh(
-        curve_points, 
-        radii, 
+        curve_points,
+        radii,
         resolution,
         original_control_points=original_control_points,
         original_radii=original_radii,
         aspect_ratio=aspect_ratio,
         global_twist=global_twist,
-        point_twists=point_twists
+        point_twists=point_twists,
+        is_closed=is_closed_loop
     )
     resolution = actual_resolution
 
@@ -851,19 +869,19 @@ def create_flex_mesh(curve_points, radii, resolution=16, cap_segments=4, origina
     start_radius = radii[0]
     end_radius = radii[-1]
 
-    if start_cap_type > 0:
+    if start_cap_type > 0 and not is_closed_loop:
         start_twist = global_twist
         if point_twists and len(point_twists) > 0:
             start_twist += point_twists[0]
-        
+
         start_roundness = None
         if hasattr(state, 'profile_point_roundness') and len(state.profile_point_roundness) > 0:
             if len(state.profile_point_roundness) == len(original_control_points) and original_control_points:
                 start_roundness = state.profile_point_roundness[0]
-        
+
         if start_cap_type == 1:
             start_cap_vertices, start_cap_faces, start_ring_indices = create_hemisphere_cap(
-                start_point, start_radius, start_direction, start_side, start_up, 
+                start_point, start_radius, start_direction, start_side, start_up,
                 resolution, cap_segments, False, seam_ring=tube_start_ring, twist_angle=start_twist, aspect_ratio=aspect_ratio, roundness=start_roundness)
         elif start_cap_type == 2:
             use_fill = (state.profile_global_type == state.PROFILE_CUSTOM)
@@ -871,16 +889,16 @@ def create_flex_mesh(curve_points, radii, resolution=16, cap_segments=4, origina
                 start_point, start_radius, start_direction, start_side, start_up,
                 resolution, False, seam_ring=tube_start_ring, twist_angle=start_twist, aspect_ratio=aspect_ratio, roundness=start_roundness, use_fill=use_fill)
 
-    if end_cap_type > 0:
+    if end_cap_type > 0 and not is_closed_loop:
         end_twist = global_twist
         if point_twists and len(point_twists) > 0:
             end_twist += point_twists[-1]
-        
+
         end_roundness = None
         if hasattr(state, 'profile_point_roundness') and len(state.profile_point_roundness) > 0:
             if len(state.profile_point_roundness) == len(original_control_points) and original_control_points:
                 end_roundness = state.profile_point_roundness[-1]
-        
+
         if end_cap_type == 1:
             end_cap_vertices, end_cap_faces, end_ring_indices = create_hemisphere_cap(
                 end_point, end_radius, end_direction, end_side, end_up,
@@ -895,10 +913,19 @@ def create_flex_mesh(curve_points, radii, resolution=16, cap_segments=4, origina
     vertices.extend(tube_vertices)
     for face in tube_faces:
         faces.append([v + tube_offset for v in face])
-    
+
+    if is_closed_loop:
+        tube_end_start = len(tube_vertices) - resolution
+        for j in range(resolution):
+            e0 = tube_offset + tube_end_start + j
+            e1 = tube_offset + tube_end_start + (j + 1) % resolution
+            s0 = tube_offset + j
+            s1 = tube_offset + (j + 1) % resolution
+            faces.append([e0, e1, s1, s0])
+
     start_cap_face_start = -1
     start_cap_face_count = 0
-    if state.start_cap_type > 0:
+    if state.start_cap_type > 0 and not is_closed_loop:
         start_cap_face_start = len(faces)
         start_cap_internal_offset = len(vertices)
         
@@ -933,7 +960,7 @@ def create_flex_mesh(curve_points, radii, resolution=16, cap_segments=4, origina
 
     end_cap_face_start = -1
     end_cap_face_count = 0
-    if state.end_cap_type > 0:
+    if state.end_cap_type > 0 and not is_closed_loop:
         end_cap_face_start = len(faces)
         end_cap_internal_offset = len(vertices)
         
@@ -1006,10 +1033,12 @@ def create_flex_mesh_from_curve(context, curve_points_3d, radii_3d, resolution=1
     """Create a flex mesh that follows the curve with varying thickness."""
     if len(curve_points_3d) < 2 or len(radii_3d) < 2:
         return None
-    
+
+    is_closed_loop = (getattr(state, 'start_cap_type', 1) == 3 or getattr(state, 'end_cap_type', 1) == 3)
+
     # Check if B-spline mode is enabled
     use_bspline = getattr(state, 'bspline_mode', False)
-    
+
     # Check if adaptive segmentation is enabled
     should_run_adaptive = getattr(state, 'adaptive_segmentation', False) and len(curve_points_3d) >= 3
     
@@ -1024,14 +1053,15 @@ def create_flex_mesh_from_curve(context, curve_points_3d, radii_3d, resolution=1
         
         if use_bspline:
             analysis_points = math_utils.bspline_cubic_open_uniform(
-                curve_points_3d, analysis_density + 1
+                curve_points_3d, analysis_density + 1, is_closed=is_closed_loop
             )
         else:
             analysis_points = math_utils.interpolate_curve_3d(
                 curve_points_3d,
                 num_points=analysis_density + 1,
                 sharp_points=no_tangent_points,
-                tensions=tensions
+                tensions=tensions,
+                is_closed=is_closed_loop
             )
         
         curvature_values = [0.0] * len(analysis_points)
@@ -1042,10 +1072,16 @@ def create_flex_mesh_from_curve(context, curve_points_3d, radii_3d, resolution=1
                 dot = max(-1.0, min(1.0, v_prev.dot(v_next)))
                 angle = math.degrees(math.acos(dot))
                 curvature_values[i] = angle
+            if is_closed_loop:
+                v_prev = (analysis_points[0] - analysis_points[-1]).normalized()
+                v_next = (analysis_points[1] - analysis_points[0]).normalized()
+                dot = max(-1.0, min(1.0, v_prev.dot(v_next)))
+                curvature_values[0] = math.degrees(math.acos(dot))
         
         curvature_maxima = []
         if len(analysis_points) >= 3:
-            for i in range(1, len(analysis_points)-1):
+            search_range = range(len(analysis_points)-1) if is_closed_loop else range(1, len(analysis_points)-1)
+            for i in search_range:
                 if curvature_values[i] > 1:
                     curvature_maxima.append((i, curvature_values[i]))
         curvature_maxima.sort(key=lambda x: x[1], reverse=True)
@@ -1058,24 +1094,29 @@ def create_flex_mesh_from_curve(context, curve_points_3d, radii_3d, resolution=1
                 if curvature_values[i] > 2:
                     curvature_maxima.append((i, curvature_values[i]))
         
+        n_density = len(density_map)
         for idx, curvature in curvature_maxima:
             min_window = max(5, int(window_size * 0.2))
             adaptive_window = max(min_window, int(window_size * min(curvature / 20.0, 1.0)))
             for offset in range(-adaptive_window, adaptive_window + 1):
-                pos = idx + offset
-                if 0 <= pos < len(density_map):
-                    falloff = 1.0 - abs(offset) / adaptive_window
-                    falloff = falloff * falloff
-                    base_multiplier = 2.0
-                    curve_multiplier = 5.0 * min(curvature / 20.0, 1.0)
-                    multiplier = (base_multiplier + curve_multiplier) * falloff
-                    density_map[pos] = max(density_map[pos], multiplier)
+                if is_closed_loop:
+                    pos = (idx + offset) % n_density
+                else:
+                    pos = idx + offset
+                    if not (0 <= pos < n_density):
+                        continue
+                falloff = 1.0 - abs(offset) / adaptive_window
+                falloff = falloff * falloff
+                base_multiplier = 2.0
+                curve_multiplier = 5.0 * min(curvature / 20.0, 1.0)
+                multiplier = (base_multiplier + curve_multiplier) * falloff
+                density_map[pos] = max(density_map[pos], multiplier)
         
         target_points = base_segments + int(sum(dm - 1.0 for dm in density_map) * base_segments / len(density_map)) + 1
         
         smooth_curve_points_3d = []
         if analysis_points:
-            smooth_curve_points_3d.append(curve_points_3d[0].copy())
+            smooth_curve_points_3d.append(analysis_points[0].copy())
             if len(analysis_points) > 1:
                 total_density = sum(density_map)
                 if total_density > 0:
@@ -1083,8 +1124,12 @@ def create_flex_mesh_from_curve(context, curve_points_3d, radii_3d, resolution=1
                     density_factor_0 = density_map[0] if density_map else 1.0
                     initial_step = 1.0 / (density_factor_0 * points_per_density) if points_per_density > 0 else 1.0
                     current_pos = max(0.5, initial_step)
-                    end_threshold = len(analysis_points) - 1.5
-                    while current_pos < end_threshold and len(smooth_curve_points_3d) < target_points - 1:
+                    # For closed loops, sample all the way around (including wrap-around region).
+                    # For open curves, stop before the end so the explicit ctrl[-1] append below
+                    # doesn't duplicate a nearby sample.
+                    end_threshold = (len(analysis_points) - 0.5) if is_closed_loop else (len(analysis_points) - 1.5)
+                    target_cap = target_points if is_closed_loop else (target_points - 1)
+                    while current_pos < end_threshold and len(smooth_curve_points_3d) < target_cap:
                         idx = int(current_pos)
                         if idx + 1 < len(analysis_points):
                             t = current_pos - idx
@@ -1095,25 +1140,26 @@ def create_flex_mesh_from_curve(context, curve_points_3d, radii_3d, resolution=1
                             current_pos += max(0.1, step) if step != float('inf') else 1.0
                         else:
                             break
-                smooth_curve_points_3d.append(curve_points_3d[-1].copy())
+                if not is_closed_loop:
+                    smooth_curve_points_3d.append(curve_points_3d[-1].copy())
             elif len(analysis_points) == 1:
                 if not smooth_curve_points_3d:
                     smooth_curve_points_3d.append(curve_points_3d[0].copy())
         else:
             if use_bspline:
-                smooth_curve_points_3d = math_utils.bspline_cubic_open_uniform(curve_points_3d, segments + 1)
+                smooth_curve_points_3d = math_utils.bspline_cubic_open_uniform(curve_points_3d, segments + 1, is_closed=is_closed_loop)
             else:
-                smooth_curve_points_3d = math_utils.interpolate_curve_3d(curve_points_3d, num_points=segments + 1, sharp_points=no_tangent_points, tensions=tensions)
+                smooth_curve_points_3d = math_utils.interpolate_curve_3d(curve_points_3d, num_points=segments + 1, sharp_points=no_tangent_points, tensions=tensions, is_closed=is_closed_loop)
 
         if len(smooth_curve_points_3d) < 2 and len(curve_points_3d) >= 2:
-            smooth_curve_points_3d = math_utils.interpolate_curve_3d(curve_points_3d, num_points=segments + 1, sharp_points=no_tangent_points, tensions=tensions)
+            smooth_curve_points_3d = math_utils.interpolate_curve_3d(curve_points_3d, num_points=segments + 1, sharp_points=no_tangent_points, tensions=tensions, is_closed=is_closed_loop)
 
-        if len(smooth_curve_points_3d) > 2:
+        if len(smooth_curve_points_3d) > 2 and not is_closed_loop:
             start_radius = radii_3d[0]
             end_radius = radii_3d[-1]
             min_dist_start = start_radius * 0.15
             min_dist_end = end_radius * 0.15
-            
+
             filtered_points = [smooth_curve_points_3d[0]]
             for pt in smooth_curve_points_3d[1:-1]:
                 dist_to_start = (pt - smooth_curve_points_3d[0]).length
@@ -1123,9 +1169,9 @@ def create_flex_mesh_from_curve(context, curve_points_3d, radii_3d, resolution=1
             filtered_points.append(smooth_curve_points_3d[-1])
             smooth_curve_points_3d = filtered_points
 
-        smooth_radii_3d = math_utils.calculate_smooth_radii(curve_points_3d, radii_3d, smooth_curve_points_3d, tensions=tensions, sharp_points=no_tangent_points)
-        
-        if len(smooth_radii_3d) >= 2:
+        smooth_radii_3d = math_utils.calculate_smooth_radii(curve_points_3d, radii_3d, smooth_curve_points_3d, tensions=tensions, sharp_points=no_tangent_points, is_closed=is_closed_loop)
+
+        if len(smooth_radii_3d) >= 2 and not is_closed_loop:
             smooth_radii_3d[0] = radii_3d[0]
             smooth_radii_3d[-1] = radii_3d[-1]
     else:
@@ -1133,22 +1179,25 @@ def create_flex_mesh_from_curve(context, curve_points_3d, radii_3d, resolution=1
         if use_bspline:
             smooth_curve_points_3d = math_utils.bspline_cubic_open_uniform(
                 curve_points_3d,
-                segments + 1
+                segments + 1,
+                is_closed=is_closed_loop
             )
         else:
             smooth_curve_points_3d = math_utils.interpolate_curve_3d(
-                curve_points_3d, 
+                curve_points_3d,
                 num_points=segments + 1,
                 sharp_points=no_tangent_points,
-                tensions=tensions
+                tensions=tensions,
+                is_closed=is_closed_loop
             )
-        
+
         smooth_radii_3d = math_utils.calculate_smooth_radii(
             curve_points_3d,
             radii_3d,
             smooth_curve_points_3d,
             tensions=tensions,
-            sharp_points=no_tangent_points
+            sharp_points=no_tangent_points,
+            is_closed=is_closed_loop
         )
     
     helix_curve_points = _apply_helix_to_curve_points(
@@ -1330,26 +1379,28 @@ def update_preview_mesh(context, curve_points_3d, radii_3d, resolution=16, segme
             if getattr(state, 'mirror_mode_active', False):
                 apply_mirror_modifier(state.preview_mesh_obj, True)
     else:
+        is_closed_loop = (getattr(state, 'start_cap_type', 1) == 3 or getattr(state, 'end_cap_type', 1) == 3)
         should_run_adaptive_logic = state.adaptive_segmentation and len(curve_points_3d) >= 3
 
         if should_run_adaptive_logic:
             base_segments = segments
-            
-            arc_length = math_utils.get_polyline_arc_length(curve_points_3d) 
+
+            arc_length = math_utils.get_polyline_arc_length(curve_points_3d)
             points_per_unit_length = 10
             min_analysis_density = base_segments * 5
             analysis_density = max(min_analysis_density, int(arc_length * points_per_unit_length))
-            
+
             if getattr(state, 'bspline_mode', False):
                 analysis_points = math_utils.bspline_cubic_open_uniform(
-                    curve_points_3d, analysis_density + 1
+                    curve_points_3d, analysis_density + 1, is_closed=is_closed_loop
                 )
             else:
                 analysis_points = math_utils.interpolate_curve_3d(
                     curve_points_3d,
                     num_points=analysis_density + 1,
                     sharp_points=state.no_tangent_points,
-                    tensions=state.point_tensions
+                    tensions=state.point_tensions,
+                    is_closed=is_closed_loop
                 )
             
             curvature_values = [0.0] * len(analysis_points)
@@ -1360,10 +1411,16 @@ def update_preview_mesh(context, curve_points_3d, radii_3d, resolution=16, segme
                     dot = max(-1.0, min(1.0, v_prev.dot(v_next)))
                     angle = math.degrees(math.acos(dot))
                     curvature_values[i] = angle
+                if is_closed_loop:
+                    v_prev = (analysis_points[0] - analysis_points[-1]).normalized()
+                    v_next = (analysis_points[1] - analysis_points[0]).normalized()
+                    dot = max(-1.0, min(1.0, v_prev.dot(v_next)))
+                    curvature_values[0] = math.degrees(math.acos(dot))
             
             curvature_maxima = []
             if len(analysis_points) >= 3:
-                for i in range(1, len(analysis_points)-1):
+                search_range = range(len(analysis_points)-1) if is_closed_loop else range(1, len(analysis_points)-1)
+                for i in search_range:
                     if curvature_values[i] > 1:
                         curvature_maxima.append((i, curvature_values[i]))
             curvature_maxima.sort(key=lambda x: x[1], reverse=True)
@@ -1376,24 +1433,29 @@ def update_preview_mesh(context, curve_points_3d, radii_3d, resolution=16, segme
                     if curvature_values[i] > 2:
                         curvature_maxima.append((i, curvature_values[i]))
             
+            n_density = len(density_map)
             for idx, curvature in curvature_maxima:
                 min_window = max(5, int(window_size * 0.2))
                 adaptive_window = max(min_window, int(window_size * min(curvature / 20.0, 1.0)))
                 for offset in range(-adaptive_window, adaptive_window + 1):
-                    pos = idx + offset
-                    if 0 <= pos < len(density_map):
-                        falloff = 1.0 - abs(offset) / adaptive_window
-                        falloff = falloff * falloff
-                        base_multiplier = 2.0
-                        curve_multiplier = 5.0 * min(curvature / 20.0, 1.0)
-                        multiplier = (base_multiplier + curve_multiplier) * falloff
-                        density_map[pos] = max(density_map[pos], multiplier)
+                    if is_closed_loop:
+                        pos = (idx + offset) % n_density
+                    else:
+                        pos = idx + offset
+                        if not (0 <= pos < n_density):
+                            continue
+                    falloff = 1.0 - abs(offset) / adaptive_window
+                    falloff = falloff * falloff
+                    base_multiplier = 2.0
+                    curve_multiplier = 5.0 * min(curvature / 20.0, 1.0)
+                    multiplier = (base_multiplier + curve_multiplier) * falloff
+                    density_map[pos] = max(density_map[pos], multiplier)
             
             target_points = base_segments + int(sum(dm - 1.0 for dm in density_map) * base_segments / len(density_map)) + 1
             
             smooth_curve_points_3d = []
             if analysis_points:
-                smooth_curve_points_3d.append(curve_points_3d[0].copy())
+                smooth_curve_points_3d.append(analysis_points[0].copy())
                 if len(analysis_points) > 1:
                     total_density = sum(density_map)
                     if total_density > 0:
@@ -1401,8 +1463,10 @@ def update_preview_mesh(context, curve_points_3d, radii_3d, resolution=16, segme
                         density_factor_0 = density_map[0] if density_map else 1.0
                         initial_step = 1.0 / (density_factor_0 * points_per_density) if points_per_density > 0 else 1.0
                         current_pos = max(0.5, initial_step)
-                        end_threshold = len(analysis_points) - 1.5
-                        while current_pos < end_threshold and len(smooth_curve_points_3d) < target_points - 1:
+                        # For closed loops, sample all the way around (including the wrap-around region).
+                        end_threshold = (len(analysis_points) - 0.5) if is_closed_loop else (len(analysis_points) - 1.5)
+                        target_cap = target_points if is_closed_loop else (target_points - 1)
+                        while current_pos < end_threshold and len(smooth_curve_points_3d) < target_cap:
                             idx = int(current_pos)
                             if idx + 1 < len(analysis_points):
                                 t = current_pos - idx
@@ -1413,25 +1477,26 @@ def update_preview_mesh(context, curve_points_3d, radii_3d, resolution=16, segme
                                 current_pos += max(0.1, step) if step != float('inf') else 1.0
                             else:
                                 break
-                    smooth_curve_points_3d.append(curve_points_3d[-1].copy())
+                    if not is_closed_loop:
+                        smooth_curve_points_3d.append(curve_points_3d[-1].copy())
                 elif len(analysis_points) == 1:
                     if not smooth_curve_points_3d:
                         smooth_curve_points_3d.append(curve_points_3d[0].copy())
             else:
                 if getattr(state, 'bspline_mode', False):
-                    smooth_curve_points_3d = math_utils.bspline_cubic_open_uniform(curve_points_3d, segments + 1)
+                    smooth_curve_points_3d = math_utils.bspline_cubic_open_uniform(curve_points_3d, segments + 1, is_closed=is_closed_loop)
                 else:
-                    smooth_curve_points_3d = math_utils.interpolate_curve_3d(curve_points_3d, num_points=segments + 1, sharp_points=state.no_tangent_points, tensions=state.point_tensions)
+                    smooth_curve_points_3d = math_utils.interpolate_curve_3d(curve_points_3d, num_points=segments + 1, sharp_points=state.no_tangent_points, tensions=state.point_tensions, is_closed=is_closed_loop)
 
             if len(smooth_curve_points_3d) < 2 and len(curve_points_3d) >= 2:
-                smooth_curve_points_3d = math_utils.interpolate_curve_3d(curve_points_3d, num_points=segments + 1, sharp_points=state.no_tangent_points, tensions=state.point_tensions)
+                smooth_curve_points_3d = math_utils.interpolate_curve_3d(curve_points_3d, num_points=segments + 1, sharp_points=state.no_tangent_points, tensions=state.point_tensions, is_closed=is_closed_loop)
 
-            if len(smooth_curve_points_3d) > 2:
+            if len(smooth_curve_points_3d) > 2 and not is_closed_loop:
                 start_radius = radii_3d[0]
                 end_radius = radii_3d[-1]
                 min_dist_start = start_radius * 0.15
                 min_dist_end = end_radius * 0.15
-                
+
                 filtered_points = [smooth_curve_points_3d[0]]
                 for pt in smooth_curve_points_3d[1:-1]:
                     dist_to_start = (pt - smooth_curve_points_3d[0]).length
@@ -1441,12 +1506,12 @@ def update_preview_mesh(context, curve_points_3d, radii_3d, resolution=16, segme
                 filtered_points.append(smooth_curve_points_3d[-1])
                 smooth_curve_points_3d = filtered_points
 
-            smooth_radii_3d = math_utils.calculate_smooth_radii(curve_points_3d, radii_3d, smooth_curve_points_3d, tensions=state.point_tensions, sharp_points=state.no_tangent_points)
-            
-            if len(smooth_radii_3d) >= 2:
+            smooth_radii_3d = math_utils.calculate_smooth_radii(curve_points_3d, radii_3d, smooth_curve_points_3d, tensions=state.point_tensions, sharp_points=state.no_tangent_points, is_closed=is_closed_loop)
+
+            if len(smooth_radii_3d) >= 2 and not is_closed_loop:
                 smooth_radii_3d[0] = radii_3d[0]
                 smooth_radii_3d[-1] = radii_3d[-1]
-            
+
             helix_curve_points = _apply_helix_to_curve_points(
                 smooth_curve_points_3d,
                 original_control_points=curve_points_3d,
@@ -1478,27 +1543,29 @@ def update_preview_mesh(context, curve_points_3d, radii_3d, resolution=16, segme
         else:
             if getattr(state, 'bspline_mode', False):
                 smooth_curve_points_3d = math_utils.bspline_cubic_open_uniform(
-                    curve_points_3d, segments + 1
+                    curve_points_3d, segments + 1, is_closed=is_closed_loop
                 )
             else:
                 smooth_curve_points_3d = math_utils.interpolate_curve_3d(
                     curve_points_3d,
                     num_points=segments + 1,
                     sharp_points=state.no_tangent_points,
-                    tensions=state.point_tensions
+                    tensions=state.point_tensions,
+                    is_closed=is_closed_loop
                 )
             smooth_radii_3d = math_utils.calculate_smooth_radii(
                 curve_points_3d,
                 radii_3d,
                 smooth_curve_points_3d,
                 tensions=state.point_tensions,
-                sharp_points=state.no_tangent_points
+                sharp_points=state.no_tangent_points,
+                is_closed=is_closed_loop
             )
-            
-            if len(smooth_radii_3d) >= 2:
+
+            if len(smooth_radii_3d) >= 2 and not is_closed_loop:
                 smooth_radii_3d[0] = radii_3d[0]
                 smooth_radii_3d[-1] = radii_3d[-1]
-            
+
             helix_curve_points = _apply_helix_to_curve_points(
                 smooth_curve_points_3d,
                 original_control_points=curve_points_3d,

@@ -70,20 +70,20 @@ def find_closest_segment_to_point(points_3d, point_3d):
     return best_index, min_dist
 
 
-def interpolate_curve_3d(points_3d, num_points=100, sharp_points=None, tensions=None):
+def interpolate_curve_3d(points_3d, num_points=100, sharp_points=None, tensions=None, is_closed=False):
     """Create a smooth curve through the given 3D points that passes through all control points."""
     if sharp_points is None:
         sharp_points = set()
-    
+
     if tensions is None:
         tensions = [0.5] * len(points_3d)
-    
+
     while len(tensions) < len(points_3d):
         tensions.append(0.5)
-    
+
     if len(points_3d) < 2:
         return points_3d.copy()
-    
+
     if len(points_3d) == 2:
         result = []
         p0 = points_3d[0]
@@ -93,51 +93,72 @@ def interpolate_curve_3d(points_3d, num_points=100, sharp_points=None, tensions=
             point = p0.lerp(p1, t)
             result.append(point.copy())
         return result
-    
+
     result = []
-    
+    n = len(points_3d)
+
+    # Include the wrap-around segment (last -> first) for closed loops
+    n_segments = n if is_closed else n - 1
     total_length = 0
     segment_lengths = []
-    for i in range(len(points_3d) - 1):
-        length = (points_3d[i+1] - points_3d[i]).length
+    for i in range(n_segments):
+        next_i = (i + 1) % n
+        length = (points_3d[next_i] - points_3d[i]).length
         segment_lengths.append(length)
         total_length += length
-    
+
     params = [0]
     current_length = 0
-    
+
     for segment_length in segment_lengths:
         current_length += segment_length
         params.append(current_length / total_length if total_length > 0 else 0)
-    
+
     for i in range(num_points):
-        t = i / (num_points - 1)
-        
+        # In closed mode, sample t in [0, 1) so the last sample does not duplicate the first
+        if is_closed:
+            t = i / num_points if num_points > 0 else 0
+        else:
+            t = i / (num_points - 1)
+
         segment = 0
         while segment < len(params) - 1 and t > params[segment + 1]:
             segment += 1
-        
+
         if segment >= len(params) - 1:
+            # Only reachable in open mode at t==1
             result.append(points_3d[-1].copy())
             continue
-        
+
         segment_t = 0
         if params[segment + 1] > params[segment]:
             segment_t = (t - params[segment]) / (params[segment + 1] - params[segment])
-        
-        p0 = points_3d[max(0, segment - 1)]
-        p1 = points_3d[segment]
-        p2 = points_3d[segment + 1]
-        p3 = points_3d[min(len(points_3d) - 1, segment + 2)]
-        
-        is_sharp_0 = segment in sharp_points
-        is_sharp_1 = (segment + 1) in sharp_points
-        
+
+        if is_closed:
+            p0 = points_3d[(segment - 1) % n]
+            p1 = points_3d[segment % n]
+            p2 = points_3d[(segment + 1) % n]
+            p3 = points_3d[(segment + 2) % n]
+            sharp_idx_0 = segment % n
+            sharp_idx_1 = (segment + 1) % n
+            tension1 = tensions[segment % n]
+            tension2 = tensions[(segment + 1) % n]
+        else:
+            p0 = points_3d[max(0, segment - 1)]
+            p1 = points_3d[segment]
+            p2 = points_3d[segment + 1]
+            p3 = points_3d[min(n - 1, segment + 2)]
+            sharp_idx_0 = segment
+            sharp_idx_1 = segment + 1
+            tension1 = tensions[segment]
+            tension2 = tensions[segment + 1]
+
+        is_sharp_0 = sharp_idx_0 in sharp_points
+        is_sharp_1 = sharp_idx_1 in sharp_points
+
         if is_sharp_0 and is_sharp_1:
             point = p1.lerp(p2, segment_t)
         elif not is_sharp_0 and not is_sharp_1:
-            tension1 = tensions[segment]
-            tension2 = tensions[segment + 1]
             m1 = (1 - tension1) * (p2 - p0)
             m2 = (1 - tension2) * (p3 - p1)
             h1 = 2*segment_t**3 - 3*segment_t**2 + 1
@@ -147,8 +168,6 @@ def interpolate_curve_3d(points_3d, num_points=100, sharp_points=None, tensions=
             point = h1*p1 + h2*p2 + h3*m1 + h4*m2
         else:
             blend = 3*segment_t**2 - 2*segment_t**3
-            tension1 = tensions[segment]
-            tension2 = tensions[segment + 1]
             if is_sharp_0:
                 m1 = Vector((0, 0, 0))
                 m2 = (1 - tension2) * (p3 - p1)
@@ -169,7 +188,7 @@ def interpolate_curve_3d(points_3d, num_points=100, sharp_points=None, tensions=
             else:
                 point = hermite.lerp(linear, blend)
         result.append(point.copy())
-    
+
     return result
 
 
@@ -196,8 +215,12 @@ def _de_boor_cubic(knot, ctrl, t):
     return d[p]
 
 
-def bspline_cubic_open_uniform(points_3d, num_points):
-    """Sample a clamped (open) uniform cubic B-spline through control points."""
+def bspline_cubic_open_uniform(points_3d, num_points, is_closed=False):
+    """Sample a uniform cubic B-spline through control points.
+
+    If is_closed=True, samples a periodic (closed) cubic B-spline that wraps
+    smoothly between the last and first control points.
+    """
     n_ctrl = len(points_3d)
     if n_ctrl == 0:
         return []
@@ -206,9 +229,27 @@ def bspline_cubic_open_uniform(points_3d, num_points):
     if n_ctrl == 2:
         return [points_3d[0].lerp(points_3d[1], i / (num_points - 1)) for i in range(num_points)]
     if n_ctrl < 4:
-        return interpolate_curve_3d(points_3d, num_points=num_points)
-    
+        return interpolate_curve_3d(points_3d, num_points=num_points, is_closed=is_closed)
+
     p = 3
+
+    if is_closed:
+        # Periodic cubic B-spline via control-point wrapping and uniform knots.
+        # Extend control points so the Greville abscissa for ctrl[0] aligns
+        # with t0, making the B-spline start at ctrl[0] not ctrl[1].
+        ext_ctrl = [points_3d[-1].copy()] + list(points_3d) + [points_3d[i].copy() for i in range(p - 1)]
+        n_ext = len(ext_ctrl)
+        m = n_ext + p + 1
+        knot = [i / (m - 1) for i in range(m)]
+        t0 = knot[p]
+        t1 = knot[n_ext]
+        samples = []
+        for i in range(num_points):
+            # Sample in [t0, t1) so we don't duplicate the seam point at the end.
+            u = t0 + (t1 - t0) * (i / num_points if num_points > 0 else 0)
+            samples.append(_de_boor_cubic(knot, ext_ctrl, u))
+        return samples
+
     m = n_ctrl + p + 1
     knot = [0.0] * (p + 1)
     inner_count = m - 2 * (p + 1)
@@ -233,13 +274,13 @@ def bspline_cubic_open_uniform(points_3d, num_points):
     return samples
 
 
-def calculate_smooth_radii(curve_points_3d, radii_3d, smooth_curve_points_3d, tensions=None, sharp_points=None):
+def calculate_smooth_radii(curve_points_3d, radii_3d, smooth_curve_points_3d, tensions=None, sharp_points=None, is_closed=False):
     """Calculate smoothly interpolated radii for the given curve points."""
     use_bspline_path = getattr(state, 'bspline_mode', False)
 
     if use_bspline_path and len(curve_points_3d) >= 2:
         dense_count = max(512, len(curve_points_3d) * 64)
-        dense_curve = bspline_cubic_open_uniform(curve_points_3d, dense_count)
+        dense_curve = bspline_cubic_open_uniform(curve_points_3d, dense_count, is_closed=is_closed)
         if len(dense_curve) < 2:
             dense_curve = curve_points_3d[:]
 
@@ -270,19 +311,31 @@ def calculate_smooth_radii(curve_points_3d, radii_3d, smooth_curve_points_3d, te
                 result_params.append(cumlen[best_i] / total_len)
             return result_params
 
-        control_params = [0.0]
-        if len(curve_points_3d) > 2:
-            interior = curve_points_3d[1:-1]
-            interior_params = seq_nearest_indices(interior, start_idx=0)
-            control_params += interior_params
-        control_params.append(1.0)
+        if is_closed:
+            n_ctrl = len(curve_points_3d)
+            ctrl_arc = [0.0]
+            for i in range(n_ctrl):
+                next_i = (i + 1) % n_ctrl
+                ctrl_arc.append(ctrl_arc[-1] + (curve_points_3d[next_i] - curve_points_3d[i]).length)
+            ctrl_total = ctrl_arc[-1]
+            params = [l / ctrl_total for l in ctrl_arc] if ctrl_total > 1e-8 else [i / n_ctrl for i in range(n_ctrl + 1)]
+        else:
+            control_params = [0.0]
+            if len(curve_points_3d) > 2:
+                interior = curve_points_3d[1:-1]
+                interior_params = seq_nearest_indices(interior, start_idx=0)
+                control_params += interior_params
+            control_params.append(1.0)
+            params = control_params
 
         smooth_params = seq_nearest_indices(smooth_curve_points_3d, start_idx=0)
-        params = control_params
     else:
+        n_ctrl = len(curve_points_3d)
+        n_ctrl_segments = n_ctrl if is_closed else n_ctrl - 1
         control_point_arc_lengths = [0.0]
-        for i in range(len(curve_points_3d) - 1):
-            length = (curve_points_3d[i+1] - curve_points_3d[i]).length
+        for i in range(n_ctrl_segments):
+            next_i = (i + 1) % n_ctrl
+            length = (curve_points_3d[next_i] - curve_points_3d[i]).length
             control_point_arc_lengths.append(control_point_arc_lengths[-1] + length)
         total_length = control_point_arc_lengths[-1]
         if total_length < 1e-6:
@@ -292,10 +345,10 @@ def calculate_smooth_radii(curve_points_3d, radii_3d, smooth_curve_points_3d, te
         smooth_params = []
         current_segment_idx = 0
         for point in smooth_curve_points_3d:
-            while current_segment_idx < len(curve_points_3d) - 2:
-                p1 = curve_points_3d[current_segment_idx]
-                p2 = curve_points_3d[current_segment_idx + 1]
-                p3 = curve_points_3d[current_segment_idx + 2]
+            while current_segment_idx < n_ctrl_segments - 1:
+                p1 = curve_points_3d[current_segment_idx % n_ctrl]
+                p2 = curve_points_3d[(current_segment_idx + 1) % n_ctrl]
+                p3 = curve_points_3d[(current_segment_idx + 2) % n_ctrl]
                 v_seg1 = p2 - p1
                 len_seg1 = v_seg1.length
                 v_seg2 = p3 - p2
@@ -314,8 +367,8 @@ def calculate_smooth_radii(curve_points_3d, radii_3d, smooth_curve_points_3d, te
                     current_segment_idx += 1
                 else:
                     break
-            p1 = curve_points_3d[current_segment_idx]
-            p2 = curve_points_3d[current_segment_idx + 1]
+            p1 = curve_points_3d[current_segment_idx % n_ctrl]
+            p2 = curve_points_3d[(current_segment_idx + 1) % n_ctrl]
             segment_vec = p2 - p1
             segment_len = segment_vec.length
             t = 0.0
@@ -336,31 +389,35 @@ def calculate_smooth_radii(curve_points_3d, radii_3d, smooth_curve_points_3d, te
     if sharp_points is None:
         sharp_points = set()
     
+    nr = len(radii_3d)
     for i, param in enumerate(smooth_params):
         segment = 0
         while segment < len(params) - 1 and param > params[segment + 1]:
             segment += 1
         if segment >= len(params) - 1:
-            radius = radii_3d[-1]
+            radius = radii_3d[0] if is_closed else radii_3d[-1]
         else:
             segment_t = 0
             if params[segment + 1] > params[segment]:
                 segment_t = (param - params[segment]) / (params[segment + 1] - params[segment])
-            r1 = radii_3d[segment]
-            r2 = radii_3d[segment + 1]
-            if segment > 0:
-                r0 = radii_3d[segment - 1]
+            if is_closed:
+                r1 = radii_3d[segment % nr]
+                r2 = radii_3d[(segment + 1) % nr]
+                r0 = radii_3d[(segment - 1) % nr]
+                r3 = radii_3d[(segment + 2) % nr]
+                tension1 = tensions[segment % nr]
+                tension2 = tensions[(segment + 1) % nr]
+                is_sharp_0 = (segment % nr) in sharp_points
+                is_sharp_1 = ((segment + 1) % nr) in sharp_points
             else:
-                r0 = r1 - (r2 - r1)
-            if segment + 2 < len(radii_3d):
-                r3 = radii_3d[segment + 2]
-            else:
-                r3 = r2 + (r2 - r1)
-            tension1 = tensions[segment]
-            tension2 = tensions[segment + 1]
-
-            is_sharp_0 = segment in sharp_points
-            is_sharp_1 = (segment + 1) in sharp_points
+                r1 = radii_3d[segment]
+                r2 = radii_3d[segment + 1]
+                r0 = radii_3d[segment - 1] if segment > 0 else r1 - (r2 - r1)
+                r3 = radii_3d[segment + 2] if segment + 2 < nr else r2 + (r2 - r1)
+                tension1 = tensions[segment]
+                tension2 = tensions[segment + 1]
+                is_sharp_0 = segment in sharp_points
+                is_sharp_1 = (segment + 1) in sharp_points
             
             def clamp_monotonic_tangent(r_prev, r_curr, r_next, m):
                 delta1 = r_next - r_curr
@@ -496,93 +553,134 @@ def create_coordinate_system(direction):
     return direction, side, up
 
 
-def create_consistent_coordinate_systems(curve_points):
+def create_consistent_coordinate_systems(curve_points, is_closed=False):
     """Create consistent coordinate systems along a curve to prevent twisting."""
     if len(curve_points) < 2:
         return []
-    
-    dir_vec = curve_points[1] - curve_points[0]
-    direction_normalized = Vector((0, 0, 0))
 
-    if dir_vec.length >= 0.0001:
-        direction_normalized = dir_vec.normalized()
-    elif len(curve_points) > 2:
-        dir_vec_fallback1 = curve_points[2] - curve_points[0]
-        if dir_vec_fallback1.length >= 0.0001:
-            direction_normalized = dir_vec_fallback1.normalized()
-        else:
-            dir_vec_fallback2 = curve_points[2] - curve_points[1]
-            if dir_vec_fallback2.length >= 0.0001:
-                direction_normalized = dir_vec_fallback2.normalized()
-            else:
-                direction_normalized = Vector((0, 0, 1))
-    else:
-        direction_normalized = Vector((0, 0, 1))
-    
-    direction, side, up = create_coordinate_system(direction_normalized)
-    coordinate_systems = [(direction, side, up)]
-    
-    for i in range(1, len(curve_points) - 1):
-        prev_point = curve_points[i - 1]
-        current_point = curve_points[i]
-        next_point = curve_points[i + 1]
-        
-        incoming = (current_point - prev_point).normalized()
-        outgoing = (next_point - current_point).normalized()
-        
+    if is_closed:
+        # Blend incoming (from wrap-around) and outgoing at the first point
+        incoming = (curve_points[0] - curve_points[-1]).normalized()
+        outgoing = (curve_points[1] - curve_points[0]).normalized()
         if incoming.dot(outgoing) < -0.99:
-            direction = coordinate_systems[-1][0]
+            direction_normalized = outgoing
         else:
-            direction = (incoming + outgoing).normalized()
-        
-        prev_direction, prev_side, prev_up = coordinate_systems[-1]
-        projected_side = prev_side - prev_side.dot(direction) * direction
-        
-        if projected_side.length < 0.001:
-            direction, side, up = create_coordinate_system(direction)
-        else:
-            side = projected_side.normalized()
-            up = direction.cross(side)
-        
-        coordinate_systems.append((direction, side, up))
-    
-    if len(curve_points) > 1:
-        dir_vec = curve_points[-1] - curve_points[-2]
+            direction_normalized = (incoming + outgoing).normalized()
+    else:
+        dir_vec = curve_points[1] - curve_points[0]
         direction_normalized = Vector((0, 0, 0))
 
         if dir_vec.length >= 0.0001:
             direction_normalized = dir_vec.normalized()
         elif len(curve_points) > 2:
-            dir_vec_fallback1 = curve_points[-1] - curve_points[-3]
+            dir_vec_fallback1 = curve_points[2] - curve_points[0]
             if dir_vec_fallback1.length >= 0.0001:
                 direction_normalized = dir_vec_fallback1.normalized()
             else:
-                dir_vec_fallback2 = curve_points[-2] - curve_points[-3]
+                dir_vec_fallback2 = curve_points[2] - curve_points[1]
                 if dir_vec_fallback2.length >= 0.0001:
                     direction_normalized = dir_vec_fallback2.normalized()
                 else:
-                    if coordinate_systems and coordinate_systems[-1][0].length >= 0.0001:
-                        direction_normalized = coordinate_systems[-1][0]
-                    else:
-                        direction_normalized = Vector((0, 0, 1))
+                    direction_normalized = Vector((0, 0, 1))
         else:
-            if coordinate_systems and coordinate_systems[-1][0].length >= 0.0001:
-                direction_normalized = coordinate_systems[-1][0]
-            else:
-                direction_normalized = Vector((0, 0, 1))
-        
-        direction = direction_normalized
+            direction_normalized = Vector((0, 0, 1))
+
+    direction, side, up = create_coordinate_system(direction_normalized)
+    coordinate_systems = [(direction, side, up)]
+
+    for i in range(1, len(curve_points) - 1):
+        prev_point = curve_points[i - 1]
+        current_point = curve_points[i]
+        next_point = curve_points[i + 1]
+
+        incoming = (current_point - prev_point).normalized()
+        outgoing = (next_point - current_point).normalized()
+
+        if incoming.dot(outgoing) < -0.99:
+            direction = coordinate_systems[-1][0]
+        else:
+            direction = (incoming + outgoing).normalized()
+
         prev_direction, prev_side, prev_up = coordinate_systems[-1]
         projected_side = prev_side - prev_side.dot(direction) * direction
-        
+
         if projected_side.length < 0.001:
             direction, side, up = create_coordinate_system(direction)
         else:
             side = projected_side.normalized()
             up = direction.cross(side)
-        
+
         coordinate_systems.append((direction, side, up))
-    
+
+    if len(curve_points) > 1:
+        if is_closed:
+            # Blend incoming and outgoing at the last point (outgoing wraps to first point)
+            incoming = (curve_points[-1] - curve_points[-2]).normalized()
+            outgoing = (curve_points[0] - curve_points[-1]).normalized()
+            if incoming.dot(outgoing) < -0.99:
+                direction = coordinate_systems[-1][0]
+            else:
+                direction = (incoming + outgoing).normalized()
+        else:
+            dir_vec = curve_points[-1] - curve_points[-2]
+            direction_normalized = Vector((0, 0, 0))
+
+            if dir_vec.length >= 0.0001:
+                direction_normalized = dir_vec.normalized()
+            elif len(curve_points) > 2:
+                dir_vec_fallback1 = curve_points[-1] - curve_points[-3]
+                if dir_vec_fallback1.length >= 0.0001:
+                    direction_normalized = dir_vec_fallback1.normalized()
+                else:
+                    dir_vec_fallback2 = curve_points[-2] - curve_points[-3]
+                    if dir_vec_fallback2.length >= 0.0001:
+                        direction_normalized = dir_vec_fallback2.normalized()
+                    else:
+                        if coordinate_systems and coordinate_systems[-1][0].length >= 0.0001:
+                            direction_normalized = coordinate_systems[-1][0]
+                        else:
+                            direction_normalized = Vector((0, 0, 1))
+            else:
+                if coordinate_systems and coordinate_systems[-1][0].length >= 0.0001:
+                    direction_normalized = coordinate_systems[-1][0]
+                else:
+                    direction_normalized = Vector((0, 0, 1))
+
+            direction = direction_normalized
+
+        prev_direction, prev_side, prev_up = coordinate_systems[-1]
+        projected_side = prev_side - prev_side.dot(direction) * direction
+
+        if projected_side.length < 0.001:
+            direction, side, up = create_coordinate_system(direction)
+        else:
+            side = projected_side.normalized()
+            up = direction.cross(side)
+
+        coordinate_systems.append((direction, side, up))
+
+    if is_closed and len(coordinate_systems) >= 2:
+        first_dir, first_side, first_up = coordinate_systems[0]
+        last_dir, last_side, last_up = coordinate_systems[-1]
+        projected = last_side - last_side.dot(first_dir) * first_dir
+        if projected.length > 0.001:
+            projected = projected.normalized()
+            cos_gap = max(-1.0, min(1.0, projected.dot(first_side)))
+            cross = projected.cross(first_side)
+            sin_gap = cross.dot(first_dir)
+            gap_angle = math.atan2(sin_gap, cos_gap)
+            n = len(coordinate_systems)
+            for i in range(n):
+                correction = -gap_angle * i / (n - 1) if n > 1 else 0.0
+                d, s, u = coordinate_systems[i]
+                cos_c = math.cos(correction)
+                sin_c = math.sin(correction)
+                coordinate_systems[i] = (
+                    d,
+                    s * cos_c + u * sin_c,
+                    -s * sin_c + u * cos_c,
+                )
+
     return coordinate_systems
 
 
@@ -812,109 +910,143 @@ def smooth_falloff(distance, falloff_radius):
     return 1.0 - smooth_t
 
 
-def calculate_smooth_twists(curve_points_3d, twists, smooth_curve_points_3d):
+def calculate_smooth_twists(curve_points_3d, twists, smooth_curve_points_3d, is_closed=False):
     """Calculate smoothly interpolated twist values using segment-based interpolation."""
     if len(curve_points_3d) < 2 or len(twists) < 2:
         return [0.0] * len(smooth_curve_points_3d)
     
     while len(twists) < len(curve_points_3d):
         twists.append(0.0)
-    
-    use_bspline_path = getattr(state, 'bspline_mode', False)
 
-    if use_bspline_path and len(curve_points_3d) >= 2:
-        dense_count = max(512, len(curve_points_3d) * 64)
-        dense_curve = bspline_cubic_open_uniform(curve_points_3d, dense_count)
-        if len(dense_curve) < 2:
-            dense_curve = curve_points_3d[:]
+    if is_closed:
+        n_ctrl = len(curve_points_3d)
+        ctrl_arc = [0.0]
+        for i in range(n_ctrl):
+            next_i = (i + 1) % n_ctrl
+            ctrl_arc.append(ctrl_arc[-1] + (curve_points_3d[next_i] - curve_points_3d[i]).length)
+        ctrl_total = ctrl_arc[-1]
+        if ctrl_total > 1e-8:
+            params = [l / ctrl_total for l in ctrl_arc]
+        else:
+            params = [i / n_ctrl for i in range(n_ctrl + 1)]
 
-        cumlen = [0.0]
-        for i in range(len(dense_curve) - 1):
-            cumlen.append(cumlen[-1] + (dense_curve[i+1] - dense_curve[i]).length)
-        total_len = cumlen[-1]
-        if total_len < 1e-6:
-            return [twists[0]] * len(smooth_curve_points_3d)
-
-        def seq_nearest_indices(query_points, start_idx=0):
-            result_params = []
-            last_idx = start_idx
-            n_samples = len(dense_curve)
-            for qp in query_points:
-                best_i = last_idx
-                best_d = float('inf')
-                end_i = min(n_samples - 1, last_idx + 256)
-                for s in range(last_idx, end_i + 1):
-                    d = (qp - dense_curve[s]).length
-                    if d < best_d:
-                        best_d = d
-                        best_i = s
-                    else:
-                        if s > last_idx + 8:
-                            break
-                last_idx = best_i
-                result_params.append(cumlen[best_i] / total_len)
-            return result_params
-
-        control_params = [0.0]
-        if len(curve_points_3d) > 2:
-            interior = curve_points_3d[1:-1]
-            control_params += seq_nearest_indices(interior, start_idx=0)
-        control_params.append(1.0)
-        params = control_params
-        smooth_params = seq_nearest_indices(smooth_curve_points_3d, start_idx=0)
+        smooth_arc = [0.0]
+        for i in range(len(smooth_curve_points_3d) - 1):
+            smooth_arc.append(smooth_arc[-1] + (smooth_curve_points_3d[i + 1] - smooth_curve_points_3d[i]).length)
+        closing_seg = (smooth_curve_points_3d[0] - smooth_curve_points_3d[-1]).length
+        smooth_total = smooth_arc[-1] + closing_seg
+        if smooth_total > 1e-8:
+            smooth_params = [l / smooth_total for l in smooth_arc]
+        else:
+            smooth_params = [i / max(1, len(smooth_curve_points_3d) - 1) for i in range(len(smooth_curve_points_3d))]
     else:
-        dense_count = max(512, len(curve_points_3d) * 64)
-        sharp_pts = getattr(state, 'no_tangent_points', set())
-        tensions = getattr(state, 'point_tensions', None)
+        use_bspline_path = getattr(state, 'bspline_mode', False)
 
-        dense_curve = interpolate_curve_3d(
-            curve_points_3d,
-            num_points=dense_count,
-            sharp_points=sharp_pts,
-            tensions=tensions,
-        )
-        if len(dense_curve) < 2:
-            dense_curve = curve_points_3d[:]
+        if use_bspline_path and len(curve_points_3d) >= 2:
+            dense_count = max(512, len(curve_points_3d) * 64)
+            dense_curve = bspline_cubic_open_uniform(curve_points_3d, dense_count)
+            if len(dense_curve) < 2:
+                dense_curve = curve_points_3d[:]
 
-        cumlen = [0.0]
-        for i in range(len(dense_curve) - 1):
-            cumlen.append(cumlen[-1] + (dense_curve[i+1] - dense_curve[i]).length)
-        total_len = cumlen[-1]
-        if total_len < 1e-6:
-            return [twists[0]] * len(smooth_curve_points_3d)
+            cumlen = [0.0]
+            for i in range(len(dense_curve) - 1):
+                cumlen.append(cumlen[-1] + (dense_curve[i+1] - dense_curve[i]).length)
+            total_len = cumlen[-1]
+            if total_len < 1e-6:
+                return [twists[0]] * len(smooth_curve_points_3d)
 
-        def seq_nearest_indices(query_points, start_idx=0):
-            result_params = []
-            last_idx = start_idx
-            n_samples = len(dense_curve)
-            for qp in query_points:
-                best_i = last_idx
-                best_d = float('inf')
-                end_i = min(n_samples - 1, last_idx + 256)
-                for s in range(last_idx, end_i + 1):
-                    d = (qp - dense_curve[s]).length
-                    if d < best_d:
-                        best_d = d
-                        best_i = s
-                    else:
-                        if s > last_idx + 8:
-                            break
-                last_idx = best_i
-                result_params.append(cumlen[best_i] / total_len)
-            return result_params
+            def seq_nearest_indices(query_points, start_idx=0):
+                result_params = []
+                last_idx = start_idx
+                n_samples = len(dense_curve)
+                for qp in query_points:
+                    best_i = last_idx
+                    best_d = float('inf')
+                    end_i = min(n_samples - 1, last_idx + 256)
+                    for s in range(last_idx, end_i + 1):
+                        d = (qp - dense_curve[s]).length
+                        if d < best_d:
+                            best_d = d
+                            best_i = s
+                        else:
+                            if s > last_idx + 8:
+                                break
+                    last_idx = best_i
+                    result_params.append(cumlen[best_i] / total_len)
+                return result_params
 
-        control_params = [0.0]
-        if len(curve_points_3d) > 2:
-            interior = curve_points_3d[1:-1]
-            control_params += seq_nearest_indices(interior, start_idx=0)
-        control_params.append(1.0)
-        params = control_params
-        smooth_params = seq_nearest_indices(smooth_curve_points_3d, start_idx=0)
+            control_params = [0.0]
+            if len(curve_points_3d) > 2:
+                interior = curve_points_3d[1:-1]
+                control_params += seq_nearest_indices(interior, start_idx=0)
+            control_params.append(1.0)
+            params = control_params
+            smooth_params = seq_nearest_indices(smooth_curve_points_3d, start_idx=0)
+        else:
+            dense_count = max(512, len(curve_points_3d) * 64)
+            sharp_pts = getattr(state, 'no_tangent_points', set())
+            tensions = getattr(state, 'point_tensions', None)
+
+            dense_curve = interpolate_curve_3d(
+                curve_points_3d,
+                num_points=dense_count,
+                sharp_points=sharp_pts,
+                tensions=tensions,
+            )
+            if len(dense_curve) < 2:
+                dense_curve = curve_points_3d[:]
+
+            cumlen = [0.0]
+            for i in range(len(dense_curve) - 1):
+                cumlen.append(cumlen[-1] + (dense_curve[i+1] - dense_curve[i]).length)
+            total_len = cumlen[-1]
+            if total_len < 1e-6:
+                return [twists[0]] * len(smooth_curve_points_3d)
+
+            def seq_nearest_indices(query_points, start_idx=0):
+                result_params = []
+                last_idx = start_idx
+                n_samples = len(dense_curve)
+                for qp in query_points:
+                    best_i = last_idx
+                    best_d = float('inf')
+                    end_i = min(n_samples - 1, last_idx + 256)
+                    for s in range(last_idx, end_i + 1):
+                        d = (qp - dense_curve[s]).length
+                        if d < best_d:
+                            best_d = d
+                            best_i = s
+                        else:
+                            if s > last_idx + 8:
+                                break
+                    last_idx = best_i
+                    result_params.append(cumlen[best_i] / total_len)
+                return result_params
+
+            control_params = [0.0]
+            if len(curve_points_3d) > 2:
+                interior = curve_points_3d[1:-1]
+                control_params += seq_nearest_indices(interior, start_idx=0)
+            control_params.append(1.0)
+            params = control_params
+            smooth_params = seq_nearest_indices(smooth_curve_points_3d, start_idx=0)
     
     unwrapped = [twists[0]]
     for i in range(1, len(twists)):
         prev = unwrapped[-1]
         cur = twists[i]
+        diff = cur - prev
+        while diff > math.pi:
+            cur -= 2 * math.pi
+            diff = cur - prev
+        while diff < -math.pi:
+            cur += 2 * math.pi
+            diff = cur - prev
+        unwrapped.append(cur)
+
+    if is_closed:
+        prev = unwrapped[-1]
+        cur = twists[0]
         diff = cur - prev
         while diff > math.pi:
             cur -= 2 * math.pi
@@ -963,12 +1095,13 @@ def calculate_smooth_twists(curve_points_3d, twists, smooth_curve_points_3d):
 
     if len(smooth_twists) >= 2:
         smooth_twists[0] = twists[0]
-        smooth_twists[-1] = twists[-1]
+        if not is_closed:
+            smooth_twists[-1] = twists[-1]
 
     return smooth_twists
 
 
-def calculate_smooth_roundness(curve_points_3d, roundness_values, smooth_curve_points_3d):
+def calculate_smooth_roundness(curve_points_3d, roundness_values, smooth_curve_points_3d, is_closed=False):
     """Calculate smoothly interpolated roundness values using segment-based interpolation."""
     if not curve_points_3d or not roundness_values or not smooth_curve_points_3d:
         return [0.3] * len(smooth_curve_points_3d)
@@ -979,15 +1112,17 @@ def calculate_smooth_roundness(curve_points_3d, roundness_values, smooth_curve_p
     if len(curve_points_3d) == 1:
         return [roundness_values[0]] * len(smooth_curve_points_3d)
     
+    n_ctrl = len(curve_points_3d)
+    n_segs = n_ctrl if is_closed else n_ctrl - 1
     smooth_roundness = []
     
     for smooth_point in smooth_curve_points_3d:
         min_dist_sq = float('inf')
         best_segment_idx = 0
         
-        for i in range(len(curve_points_3d) - 1):
+        for i in range(n_segs):
             p1 = curve_points_3d[i]
-            p2 = curve_points_3d[i + 1]
+            p2 = curve_points_3d[(i + 1) % n_ctrl]
             segment_vec = p2 - p1
             segment_length_sq = segment_vec.length_squared
             
@@ -1006,9 +1141,9 @@ def calculate_smooth_roundness(curve_points_3d, roundness_values, smooth_curve_p
                 best_segment_idx = i
         
         p1 = curve_points_3d[best_segment_idx]
-        p2 = curve_points_3d[best_segment_idx + 1]
+        p2 = curve_points_3d[(best_segment_idx + 1) % n_ctrl]
         roundness1 = roundness_values[best_segment_idx]
-        roundness2 = roundness_values[best_segment_idx + 1]
+        roundness2 = roundness_values[(best_segment_idx + 1) % n_ctrl]
         
         segment_vec = p2 - p1
         segment_length_sq = segment_vec.length_squared

@@ -612,22 +612,24 @@ def modal_handler(operator, context, event):
         return {'RUNNING_MODAL'}
 
     if event.type == state.KEY_PROFILE_CAP_TOGGLE and event.value == 'PRESS':
+        cap_names = ['None', 'Hemisphere', 'Planar', 'Closed Loop']
         if state.hover_point_index == 0:
-            state.start_cap_type = (state.start_cap_type + 1) % 3
+            state.start_cap_type = (state.start_cap_type + 1) % 4
+            if state.start_cap_type == 3:
+                state.end_cap_type = 3
             state.save_history_state()
-            cap_type_name = ['None', 'Hemisphere', 'Planar'][state.start_cap_type]
-            operator.report({'INFO'}, f"Start cap set to {cap_type_name}")
+            operator.report({'INFO'}, f"Start cap set to {cap_names[state.start_cap_type]}")
         elif state.hover_point_index == len(state.points_3d) - 1:
-            state.end_cap_type = (state.end_cap_type + 1) % 3
+            state.end_cap_type = (state.end_cap_type + 1) % 4
+            if state.end_cap_type == 3:
+                state.start_cap_type = 3
             state.save_history_state()
-            cap_type_name = ['None', 'Hemisphere', 'Planar'][state.end_cap_type]
-            operator.report({'INFO'}, f"End cap set to {cap_type_name}")
+            operator.report({'INFO'}, f"End cap set to {cap_names[state.end_cap_type]}")
         else:
-            state.start_cap_type = (state.start_cap_type + 1) % 3
-            state.end_cap_type = (state.end_cap_type + 1) % 3
+            state.start_cap_type = (state.start_cap_type + 1) % 4
+            state.end_cap_type = state.start_cap_type
             state.save_history_state()
-            cap_type_name = ['None', 'Hemisphere', 'Planar'][state.start_cap_type]
-            operator.report({'INFO'}, f"Both caps set to {cap_type_name}")
+            operator.report({'INFO'}, f"Both caps set to {cap_names[state.start_cap_type]}")
         
         if len(state.points_3d) >= 2 and len(state.point_radii_3d) >= 2:
             mesh_utils.update_preview_mesh(context, state.points_3d, state.point_radii_3d, 

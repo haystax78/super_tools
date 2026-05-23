@@ -2,15 +2,10 @@
 
 A Blender addon that provides advanced mesh editing tools for enhanced modeling workflows.
 
-## What's New in v1.2.7
+## What's New in v1.2.8
 
 - **Flex Tool UV Generation**:
-  - Added optional automatic UV generation for finalized Flex meshes.
-  - Tube UVs are generated as a grid: U wraps around the profile and
-    V runs from curve start (0) to end (1).
-  - Start and end caps are mapped into separate UV islands.
-  - UV generation is controlled by a new **Generate UV** toggle.
-  - Generate UV defaults to OFF and is remembered via addon preferences.
+  - 'Closed loop' end cap mode added
 
 ## Features
 
@@ -18,10 +13,8 @@ A Blender addon that provides advanced mesh editing tools for enhanced modeling 
 - **Super Extrude**: Modal extrude operator with automatic orientation and intuitive mouse controls
 - **Super Orient**: Proportional editing tool for reorienting face selections with topology-aware falloff
 - **Super Align**: Align mesh objects by matching three surface points (A, B, C); includes tools to plot/delete A/B/C locators, align to active target, iterative ICP alignment, and sequential visibility utility.
-- **Spatial Relationship Logic**: Maintains consistent orientation behavior across all tools
-- **Proportional Editing Integration**: Seamless integration with Blender's proportional editing settings
 - **Auto-Updater**: Optionally checks and installs updates from GitHub on startup
-- **Performance-Optimized Falloff**: KDTree + NumPy powered proportional weights with connected-only support
+
 
 ## Installation
 
@@ -77,6 +70,9 @@ A Blender addon that provides advanced mesh editing tools for enhanced modeling 
 - Blender 4.5 or later
 
 ## Changelog
+
+### v1.2.8
+- Flex Tool: Added 'Closed loop' end cap mode.
 
 ### v1.2.7
 - Flex Tool: Added optional UV generation when finalizing meshes.
