@@ -617,19 +617,31 @@ def modal_handler(operator, context, event):
             state.start_cap_type = (state.start_cap_type + 1) % 4
             if state.start_cap_type == 3:
                 state.end_cap_type = 3
+            fallback_applied = state.enforce_closed_loop_point_requirement()
             state.save_history_state()
-            operator.report({'INFO'}, f"Start cap set to {cap_names[state.start_cap_type]}")
+            if fallback_applied:
+                operator.report({'INFO'}, "Closed Loop requires at least 3 control points. Switched to Planar end caps.")
+            else:
+                operator.report({'INFO'}, f"Start cap set to {cap_names[state.start_cap_type]}")
         elif state.hover_point_index == len(state.points_3d) - 1:
             state.end_cap_type = (state.end_cap_type + 1) % 4
             if state.end_cap_type == 3:
                 state.start_cap_type = 3
+            fallback_applied = state.enforce_closed_loop_point_requirement()
             state.save_history_state()
-            operator.report({'INFO'}, f"End cap set to {cap_names[state.end_cap_type]}")
+            if fallback_applied:
+                operator.report({'INFO'}, "Closed Loop requires at least 3 control points. Switched to Planar end caps.")
+            else:
+                operator.report({'INFO'}, f"End cap set to {cap_names[state.end_cap_type]}")
         else:
             state.start_cap_type = (state.start_cap_type + 1) % 4
             state.end_cap_type = state.start_cap_type
+            fallback_applied = state.enforce_closed_loop_point_requirement()
             state.save_history_state()
-            operator.report({'INFO'}, f"Both caps set to {cap_names[state.start_cap_type]}")
+            if fallback_applied:
+                operator.report({'INFO'}, "Closed Loop requires at least 3 control points. Switched to Planar end caps.")
+            else:
+                operator.report({'INFO'}, f"Both caps set to {cap_names[state.start_cap_type]}")
         
         if len(state.points_3d) >= 2 and len(state.point_radii_3d) >= 2:
             mesh_utils.update_preview_mesh(context, state.points_3d, state.point_radii_3d, 

@@ -50,13 +50,14 @@ def get_curve_tangent(points_3d, index):
         return (v1 + v2).normalized() if (v1 + v2).length > 1e-6 else v2
 
 
-def find_closest_segment_to_point(points_3d, point_3d):
+def find_closest_segment_to_point(points_3d, point_3d, is_closed=False):
     """Find the segment index whose line is closest to the given 3D point."""
     min_dist = float('inf')
     best_index = -1
-    for i in range(len(points_3d) - 1):
+    segment_count = len(points_3d) if is_closed and len(points_3d) > 2 else len(points_3d) - 1
+    for i in range(segment_count):
         a = points_3d[i]
-        b = points_3d[i+1]
+        b = points_3d[(i + 1) % len(points_3d)]
         ab = b - a
         ab_len_sq = ab.length_squared
         if ab_len_sq == 0:
@@ -671,7 +672,7 @@ def create_consistent_coordinate_systems(curve_points, is_closed=False):
             gap_angle = math.atan2(sin_gap, cos_gap)
             n = len(coordinate_systems)
             for i in range(n):
-                correction = -gap_angle * i / (n - 1) if n > 1 else 0.0
+                correction = gap_angle * i / (n - 1) if n > 1 else 0.0
                 d, s, u = coordinate_systems[i]
                 cos_c = math.cos(correction)
                 sin_c = math.sin(correction)
@@ -808,11 +809,25 @@ def find_closest_point_on_curve(context, mouse_pos, curve_points_3d, threshold=1
     tensions = getattr(state, 'point_tensions', None)
     sharp_points = getattr(state, 'no_tangent_points', set())
     dense_count = max(400, len(curve_points_3d) * 40)
+    is_closed_loop = (
+        int(getattr(state, 'start_cap_type', 1)) == 3
+        or int(getattr(state, 'end_cap_type', 1)) == 3
+    )
     
     if getattr(state, 'bspline_mode', False):
-        dense_curve = bspline_cubic_open_uniform(curve_points_3d, dense_count)
+        dense_curve = bspline_cubic_open_uniform(
+            curve_points_3d,
+            dense_count,
+            is_closed=is_closed_loop,
+        )
     else:
-        dense_curve = interpolate_curve_3d(curve_points_3d, num_points=dense_count, sharp_points=sharp_points, tensions=tensions)
+        dense_curve = interpolate_curve_3d(
+            curve_points_3d,
+            num_points=dense_count,
+            sharp_points=sharp_points,
+            tensions=tensions,
+            is_closed=is_closed_loop,
+        )
     
     dense_curve_2d = []
     dense_curve_valid = []
@@ -854,8 +869,11 @@ def find_closest_point_on_curve(context, mouse_pos, curve_points_3d, threshold=1
     if min_dist > threshold or closest_point_3d is None:
         return False, None, -1
     
-    t = closest_smooth_index / (len(smooth_curve) - 1)
-    segment_index = min(int(t * (len(curve_points_3d) - 1)), len(curve_points_3d) - 2)
+    segment_index, _ = find_closest_segment_to_point(
+        curve_points_3d,
+        closest_point_3d,
+        is_closed=is_closed_loop,
+    )
     
     return True, closest_point_3d, segment_index
 

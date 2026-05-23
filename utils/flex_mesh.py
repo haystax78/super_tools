@@ -61,6 +61,170 @@ def _sample_helix_profile(control_t_values, control_values, target_t):
     return float(control_values[-1])
 
 
+def _compute_smooth_curve_points(
+    curve_points_3d,
+    radii_3d,
+    segments,
+    no_tangent_points,
+    tensions,
+    is_closed_loop,
+    use_bspline,
+    adaptive,
+):
+    """Compute the densely sampled smooth curve for the tube mesh.
+
+    Handles both adaptive (curvature-aware) segmentation and uniform
+    sampling. For adaptive mode, samples more densely in high-curvature
+    regions and wraps correctly across the seam of a closed loop.
+    """
+    def _uniform_sample(num_points):
+        if use_bspline:
+            return math_utils.bspline_cubic_open_uniform(
+                curve_points_3d, num_points, is_closed=is_closed_loop
+            )
+        return math_utils.interpolate_curve_3d(
+            curve_points_3d,
+            num_points=num_points,
+            sharp_points=no_tangent_points,
+            tensions=tensions,
+            is_closed=is_closed_loop,
+        )
+
+    if not adaptive or len(curve_points_3d) < 3:
+        return _uniform_sample(segments + 1)
+
+    base_segments = segments
+    arc_length = math_utils.get_polyline_arc_length(curve_points_3d)
+    points_per_unit_length = 10
+    min_analysis_density = base_segments * 5
+    analysis_density = max(min_analysis_density, int(arc_length * points_per_unit_length))
+
+    analysis_points = _uniform_sample(analysis_density + 1)
+
+    curvature_values = [0.0] * len(analysis_points)
+    if len(analysis_points) >= 3:
+        for i in range(1, len(analysis_points) - 1):
+            v_prev = (analysis_points[i] - analysis_points[i - 1]).normalized()
+            v_next = (analysis_points[i + 1] - analysis_points[i]).normalized()
+            dot = max(-1.0, min(1.0, v_prev.dot(v_next)))
+            curvature_values[i] = math.degrees(math.acos(dot))
+        if is_closed_loop:
+            v_prev = (analysis_points[0] - analysis_points[-1]).normalized()
+            v_next = (analysis_points[1] - analysis_points[0]).normalized()
+            dot = max(-1.0, min(1.0, v_prev.dot(v_next)))
+            curvature_values[0] = math.degrees(math.acos(dot))
+
+    curvature_maxima = []
+    if len(analysis_points) >= 3:
+        search_range = (
+            range(len(analysis_points) - 1) if is_closed_loop
+            else range(1, len(analysis_points) - 1)
+        )
+        for i in search_range:
+            if curvature_values[i] > 1:
+                curvature_maxima.append((i, curvature_values[i]))
+    curvature_maxima.sort(key=lambda x: x[1], reverse=True)
+
+    density_map = [1.0] * analysis_density
+    window_frac = 0.16
+    window_size = int(window_frac * analysis_density)
+    if not curvature_maxima:
+        for i in range(1, len(analysis_points) - 1):
+            if curvature_values[i] > 2:
+                curvature_maxima.append((i, curvature_values[i]))
+
+    n_density = len(density_map)
+    for idx, curvature in curvature_maxima:
+        min_window = max(5, int(window_size * 0.2))
+        adaptive_window = max(min_window, int(window_size * min(curvature / 20.0, 1.0)))
+        for offset in range(-adaptive_window, adaptive_window + 1):
+            if is_closed_loop:
+                pos = (idx + offset) % n_density
+            else:
+                pos = idx + offset
+                if not (0 <= pos < n_density):
+                    continue
+            falloff = 1.0 - abs(offset) / adaptive_window
+            falloff = falloff * falloff
+            base_multiplier = 2.0
+            curve_multiplier = 5.0 * min(curvature / 20.0, 1.0)
+            multiplier = (base_multiplier + curve_multiplier) * falloff
+            density_map[pos] = max(density_map[pos], multiplier)
+
+    target_points = (
+        base_segments
+        + int(sum(dm - 1.0 for dm in density_map) * base_segments / len(density_map))
+        + 1
+    )
+
+    smooth_curve_points_3d = []
+    if analysis_points:
+        smooth_curve_points_3d.append(analysis_points[0].copy())
+        if len(analysis_points) > 1:
+            total_density = sum(density_map)
+            if total_density > 0:
+                points_per_density = (target_points - 2) / total_density if target_points > 2 else 0
+                density_factor_0 = density_map[0] if density_map else 1.0
+                initial_step = 1.0 / (density_factor_0 * points_per_density) if points_per_density > 0 else 1.0
+                current_pos = max(0.5, initial_step)
+                # For closed loops, sample all the way around (including the wrap-around region).
+                # For open curves, stop before the end so the explicit ctrl[-1] append below
+                # doesn't duplicate a nearby sample.
+                end_threshold = (
+                    (len(analysis_points) - 0.5) if is_closed_loop
+                    else (len(analysis_points) - 1.5)
+                )
+                target_cap = target_points if is_closed_loop else (target_points - 1)
+                while current_pos < end_threshold and len(smooth_curve_points_3d) < target_cap:
+                    idx = int(current_pos)
+                    if idx + 1 < len(analysis_points):
+                        t = current_pos - idx
+                        point = (
+                            analysis_points[idx].lerp(analysis_points[idx + 1], t)
+                            if 0.0 < t < 1.0
+                            else analysis_points[idx]
+                        )
+                        smooth_curve_points_3d.append(point)
+                        density_factor = density_map[min(idx, len(density_map) - 1)]
+                        step = 1.0 / (density_factor * points_per_density) if points_per_density > 0 else float('inf')
+                        current_pos += max(0.1, step) if step != float('inf') else 1.0
+                    else:
+                        break
+            if not is_closed_loop:
+                smooth_curve_points_3d.append(curve_points_3d[-1].copy())
+        elif len(analysis_points) == 1:
+            if not smooth_curve_points_3d:
+                smooth_curve_points_3d.append(curve_points_3d[0].copy())
+    else:
+        smooth_curve_points_3d = _uniform_sample(segments + 1)
+
+    if len(smooth_curve_points_3d) < 2 and len(curve_points_3d) >= 2:
+        smooth_curve_points_3d = math_utils.interpolate_curve_3d(
+            curve_points_3d,
+            num_points=segments + 1,
+            sharp_points=no_tangent_points,
+            tensions=tensions,
+            is_closed=is_closed_loop,
+        )
+
+    if len(smooth_curve_points_3d) > 2 and not is_closed_loop:
+        start_radius = radii_3d[0]
+        end_radius = radii_3d[-1]
+        min_dist_start = start_radius * 0.15
+        min_dist_end = end_radius * 0.15
+
+        filtered_points = [smooth_curve_points_3d[0]]
+        for pt in smooth_curve_points_3d[1:-1]:
+            dist_to_start = (pt - smooth_curve_points_3d[0]).length
+            dist_to_end = (pt - smooth_curve_points_3d[-1]).length
+            if dist_to_start >= min_dist_start and dist_to_end >= min_dist_end:
+                filtered_points.append(pt)
+        filtered_points.append(smooth_curve_points_3d[-1])
+        smooth_curve_points_3d = filtered_points
+
+    return smooth_curve_points_3d
+
+
 def _apply_helix_to_curve_points(curve_points, original_control_points=None):
     """Return evaluated points with non-destructive helix offset applied."""
     if len(curve_points) < 2:
@@ -1041,164 +1205,30 @@ def create_flex_mesh_from_curve(context, curve_points_3d, radii_3d, resolution=1
 
     # Check if adaptive segmentation is enabled
     should_run_adaptive = getattr(state, 'adaptive_segmentation', False) and len(curve_points_3d) >= 3
-    
-    if should_run_adaptive:
-        # Adaptive segmentation logic - adds more segments in high-curvature areas
-        base_segments = segments
-        
-        arc_length = math_utils.get_polyline_arc_length(curve_points_3d) 
-        points_per_unit_length = 10
-        min_analysis_density = base_segments * 5
-        analysis_density = max(min_analysis_density, int(arc_length * points_per_unit_length))
-        
-        if use_bspline:
-            analysis_points = math_utils.bspline_cubic_open_uniform(
-                curve_points_3d, analysis_density + 1, is_closed=is_closed_loop
-            )
-        else:
-            analysis_points = math_utils.interpolate_curve_3d(
-                curve_points_3d,
-                num_points=analysis_density + 1,
-                sharp_points=no_tangent_points,
-                tensions=tensions,
-                is_closed=is_closed_loop
-            )
-        
-        curvature_values = [0.0] * len(analysis_points)
-        if len(analysis_points) >= 3:
-            for i in range(1, len(analysis_points)-1):
-                v_prev = (analysis_points[i] - analysis_points[i-1]).normalized()
-                v_next = (analysis_points[i+1] - analysis_points[i]).normalized()
-                dot = max(-1.0, min(1.0, v_prev.dot(v_next)))
-                angle = math.degrees(math.acos(dot))
-                curvature_values[i] = angle
-            if is_closed_loop:
-                v_prev = (analysis_points[0] - analysis_points[-1]).normalized()
-                v_next = (analysis_points[1] - analysis_points[0]).normalized()
-                dot = max(-1.0, min(1.0, v_prev.dot(v_next)))
-                curvature_values[0] = math.degrees(math.acos(dot))
-        
-        curvature_maxima = []
-        if len(analysis_points) >= 3:
-            search_range = range(len(analysis_points)-1) if is_closed_loop else range(1, len(analysis_points)-1)
-            for i in search_range:
-                if curvature_values[i] > 1:
-                    curvature_maxima.append((i, curvature_values[i]))
-        curvature_maxima.sort(key=lambda x: x[1], reverse=True)
-        
-        density_map = [1.0] * analysis_density
-        window_frac = 0.16
-        window_size = int(window_frac * analysis_density)
-        if not curvature_maxima:
-            for i in range(1, len(analysis_points)-1):
-                if curvature_values[i] > 2:
-                    curvature_maxima.append((i, curvature_values[i]))
-        
-        n_density = len(density_map)
-        for idx, curvature in curvature_maxima:
-            min_window = max(5, int(window_size * 0.2))
-            adaptive_window = max(min_window, int(window_size * min(curvature / 20.0, 1.0)))
-            for offset in range(-adaptive_window, adaptive_window + 1):
-                if is_closed_loop:
-                    pos = (idx + offset) % n_density
-                else:
-                    pos = idx + offset
-                    if not (0 <= pos < n_density):
-                        continue
-                falloff = 1.0 - abs(offset) / adaptive_window
-                falloff = falloff * falloff
-                base_multiplier = 2.0
-                curve_multiplier = 5.0 * min(curvature / 20.0, 1.0)
-                multiplier = (base_multiplier + curve_multiplier) * falloff
-                density_map[pos] = max(density_map[pos], multiplier)
-        
-        target_points = base_segments + int(sum(dm - 1.0 for dm in density_map) * base_segments / len(density_map)) + 1
-        
-        smooth_curve_points_3d = []
-        if analysis_points:
-            smooth_curve_points_3d.append(analysis_points[0].copy())
-            if len(analysis_points) > 1:
-                total_density = sum(density_map)
-                if total_density > 0:
-                    points_per_density = (target_points - 2) / total_density if target_points > 2 else 0
-                    density_factor_0 = density_map[0] if density_map else 1.0
-                    initial_step = 1.0 / (density_factor_0 * points_per_density) if points_per_density > 0 else 1.0
-                    current_pos = max(0.5, initial_step)
-                    # For closed loops, sample all the way around (including wrap-around region).
-                    # For open curves, stop before the end so the explicit ctrl[-1] append below
-                    # doesn't duplicate a nearby sample.
-                    end_threshold = (len(analysis_points) - 0.5) if is_closed_loop else (len(analysis_points) - 1.5)
-                    target_cap = target_points if is_closed_loop else (target_points - 1)
-                    while current_pos < end_threshold and len(smooth_curve_points_3d) < target_cap:
-                        idx = int(current_pos)
-                        if idx + 1 < len(analysis_points):
-                            t = current_pos - idx
-                            point = analysis_points[idx].lerp(analysis_points[idx+1], t) if 0.0 < t < 1.0 else analysis_points[idx]
-                            smooth_curve_points_3d.append(point)
-                            density_factor = density_map[min(idx, len(density_map)-1)]
-                            step = 1.0 / (density_factor * points_per_density) if points_per_density > 0 else float('inf')
-                            current_pos += max(0.1, step) if step != float('inf') else 1.0
-                        else:
-                            break
-                if not is_closed_loop:
-                    smooth_curve_points_3d.append(curve_points_3d[-1].copy())
-            elif len(analysis_points) == 1:
-                if not smooth_curve_points_3d:
-                    smooth_curve_points_3d.append(curve_points_3d[0].copy())
-        else:
-            if use_bspline:
-                smooth_curve_points_3d = math_utils.bspline_cubic_open_uniform(curve_points_3d, segments + 1, is_closed=is_closed_loop)
-            else:
-                smooth_curve_points_3d = math_utils.interpolate_curve_3d(curve_points_3d, num_points=segments + 1, sharp_points=no_tangent_points, tensions=tensions, is_closed=is_closed_loop)
 
-        if len(smooth_curve_points_3d) < 2 and len(curve_points_3d) >= 2:
-            smooth_curve_points_3d = math_utils.interpolate_curve_3d(curve_points_3d, num_points=segments + 1, sharp_points=no_tangent_points, tensions=tensions, is_closed=is_closed_loop)
+    smooth_curve_points_3d = _compute_smooth_curve_points(
+        curve_points_3d,
+        radii_3d,
+        segments,
+        no_tangent_points=no_tangent_points,
+        tensions=tensions,
+        is_closed_loop=is_closed_loop,
+        use_bspline=use_bspline,
+        adaptive=should_run_adaptive,
+    )
 
-        if len(smooth_curve_points_3d) > 2 and not is_closed_loop:
-            start_radius = radii_3d[0]
-            end_radius = radii_3d[-1]
-            min_dist_start = start_radius * 0.15
-            min_dist_end = end_radius * 0.15
+    smooth_radii_3d = math_utils.calculate_smooth_radii(
+        curve_points_3d,
+        radii_3d,
+        smooth_curve_points_3d,
+        tensions=tensions,
+        sharp_points=no_tangent_points,
+        is_closed=is_closed_loop,
+    )
 
-            filtered_points = [smooth_curve_points_3d[0]]
-            for pt in smooth_curve_points_3d[1:-1]:
-                dist_to_start = (pt - smooth_curve_points_3d[0]).length
-                dist_to_end = (pt - smooth_curve_points_3d[-1]).length
-                if dist_to_start >= min_dist_start and dist_to_end >= min_dist_end:
-                    filtered_points.append(pt)
-            filtered_points.append(smooth_curve_points_3d[-1])
-            smooth_curve_points_3d = filtered_points
-
-        smooth_radii_3d = math_utils.calculate_smooth_radii(curve_points_3d, radii_3d, smooth_curve_points_3d, tensions=tensions, sharp_points=no_tangent_points, is_closed=is_closed_loop)
-
-        if len(smooth_radii_3d) >= 2 and not is_closed_loop:
-            smooth_radii_3d[0] = radii_3d[0]
-            smooth_radii_3d[-1] = radii_3d[-1]
-    else:
-        # Standard interpolation without adaptive segmentation
-        if use_bspline:
-            smooth_curve_points_3d = math_utils.bspline_cubic_open_uniform(
-                curve_points_3d,
-                segments + 1,
-                is_closed=is_closed_loop
-            )
-        else:
-            smooth_curve_points_3d = math_utils.interpolate_curve_3d(
-                curve_points_3d,
-                num_points=segments + 1,
-                sharp_points=no_tangent_points,
-                tensions=tensions,
-                is_closed=is_closed_loop
-            )
-
-        smooth_radii_3d = math_utils.calculate_smooth_radii(
-            curve_points_3d,
-            radii_3d,
-            smooth_curve_points_3d,
-            tensions=tensions,
-            sharp_points=no_tangent_points,
-            is_closed=is_closed_loop
-        )
+    if len(smooth_radii_3d) >= 2 and not is_closed_loop:
+        smooth_radii_3d[0] = radii_3d[0]
+        smooth_radii_3d[-1] = radii_3d[-1]
     
     helix_curve_points = _apply_helix_to_curve_points(
         smooth_curve_points_3d,
@@ -1380,219 +1410,59 @@ def update_preview_mesh(context, curve_points_3d, radii_3d, resolution=16, segme
                 apply_mirror_modifier(state.preview_mesh_obj, True)
     else:
         is_closed_loop = (getattr(state, 'start_cap_type', 1) == 3 or getattr(state, 'end_cap_type', 1) == 3)
+        use_bspline = getattr(state, 'bspline_mode', False)
         should_run_adaptive_logic = state.adaptive_segmentation and len(curve_points_3d) >= 3
 
-        if should_run_adaptive_logic:
-            base_segments = segments
+        smooth_curve_points_3d = _compute_smooth_curve_points(
+            curve_points_3d,
+            radii_3d,
+            segments,
+            no_tangent_points=state.no_tangent_points,
+            tensions=state.point_tensions,
+            is_closed_loop=is_closed_loop,
+            use_bspline=use_bspline,
+            adaptive=should_run_adaptive_logic,
+        )
 
-            arc_length = math_utils.get_polyline_arc_length(curve_points_3d)
-            points_per_unit_length = 10
-            min_analysis_density = base_segments * 5
-            analysis_density = max(min_analysis_density, int(arc_length * points_per_unit_length))
+        smooth_radii_3d = math_utils.calculate_smooth_radii(
+            curve_points_3d,
+            radii_3d,
+            smooth_curve_points_3d,
+            tensions=state.point_tensions,
+            sharp_points=state.no_tangent_points,
+            is_closed=is_closed_loop,
+        )
 
-            if getattr(state, 'bspline_mode', False):
-                analysis_points = math_utils.bspline_cubic_open_uniform(
-                    curve_points_3d, analysis_density + 1, is_closed=is_closed_loop
-                )
-            else:
-                analysis_points = math_utils.interpolate_curve_3d(
-                    curve_points_3d,
-                    num_points=analysis_density + 1,
-                    sharp_points=state.no_tangent_points,
-                    tensions=state.point_tensions,
-                    is_closed=is_closed_loop
-                )
-            
-            curvature_values = [0.0] * len(analysis_points)
-            if len(analysis_points) >= 3:
-                for i in range(1, len(analysis_points)-1):
-                    v_prev = (analysis_points[i] - analysis_points[i-1]).normalized()
-                    v_next = (analysis_points[i+1] - analysis_points[i]).normalized()
-                    dot = max(-1.0, min(1.0, v_prev.dot(v_next)))
-                    angle = math.degrees(math.acos(dot))
-                    curvature_values[i] = angle
-                if is_closed_loop:
-                    v_prev = (analysis_points[0] - analysis_points[-1]).normalized()
-                    v_next = (analysis_points[1] - analysis_points[0]).normalized()
-                    dot = max(-1.0, min(1.0, v_prev.dot(v_next)))
-                    curvature_values[0] = math.degrees(math.acos(dot))
-            
-            curvature_maxima = []
-            if len(analysis_points) >= 3:
-                search_range = range(len(analysis_points)-1) if is_closed_loop else range(1, len(analysis_points)-1)
-                for i in search_range:
-                    if curvature_values[i] > 1:
-                        curvature_maxima.append((i, curvature_values[i]))
-            curvature_maxima.sort(key=lambda x: x[1], reverse=True)
-            
-            density_map = [1.0] * analysis_density
-            window_frac = 0.16
-            window_size = int(window_frac * analysis_density)
-            if not curvature_maxima:
-                for i in range(1, len(analysis_points)-1):
-                    if curvature_values[i] > 2:
-                        curvature_maxima.append((i, curvature_values[i]))
-            
-            n_density = len(density_map)
-            for idx, curvature in curvature_maxima:
-                min_window = max(5, int(window_size * 0.2))
-                adaptive_window = max(min_window, int(window_size * min(curvature / 20.0, 1.0)))
-                for offset in range(-adaptive_window, adaptive_window + 1):
-                    if is_closed_loop:
-                        pos = (idx + offset) % n_density
-                    else:
-                        pos = idx + offset
-                        if not (0 <= pos < n_density):
-                            continue
-                    falloff = 1.0 - abs(offset) / adaptive_window
-                    falloff = falloff * falloff
-                    base_multiplier = 2.0
-                    curve_multiplier = 5.0 * min(curvature / 20.0, 1.0)
-                    multiplier = (base_multiplier + curve_multiplier) * falloff
-                    density_map[pos] = max(density_map[pos], multiplier)
-            
-            target_points = base_segments + int(sum(dm - 1.0 for dm in density_map) * base_segments / len(density_map)) + 1
-            
-            smooth_curve_points_3d = []
-            if analysis_points:
-                smooth_curve_points_3d.append(analysis_points[0].copy())
-                if len(analysis_points) > 1:
-                    total_density = sum(density_map)
-                    if total_density > 0:
-                        points_per_density = (target_points - 2) / total_density if target_points > 2 else 0
-                        density_factor_0 = density_map[0] if density_map else 1.0
-                        initial_step = 1.0 / (density_factor_0 * points_per_density) if points_per_density > 0 else 1.0
-                        current_pos = max(0.5, initial_step)
-                        # For closed loops, sample all the way around (including the wrap-around region).
-                        end_threshold = (len(analysis_points) - 0.5) if is_closed_loop else (len(analysis_points) - 1.5)
-                        target_cap = target_points if is_closed_loop else (target_points - 1)
-                        while current_pos < end_threshold and len(smooth_curve_points_3d) < target_cap:
-                            idx = int(current_pos)
-                            if idx + 1 < len(analysis_points):
-                                t = current_pos - idx
-                                point = analysis_points[idx].lerp(analysis_points[idx+1], t) if 0.0 < t < 1.0 else analysis_points[idx]
-                                smooth_curve_points_3d.append(point)
-                                density_factor = density_map[min(idx, len(density_map)-1)]
-                                step = 1.0 / (density_factor * points_per_density) if points_per_density > 0 else float('inf')
-                                current_pos += max(0.1, step) if step != float('inf') else 1.0
-                            else:
-                                break
-                    if not is_closed_loop:
-                        smooth_curve_points_3d.append(curve_points_3d[-1].copy())
-                elif len(analysis_points) == 1:
-                    if not smooth_curve_points_3d:
-                        smooth_curve_points_3d.append(curve_points_3d[0].copy())
-            else:
-                if getattr(state, 'bspline_mode', False):
-                    smooth_curve_points_3d = math_utils.bspline_cubic_open_uniform(curve_points_3d, segments + 1, is_closed=is_closed_loop)
-                else:
-                    smooth_curve_points_3d = math_utils.interpolate_curve_3d(curve_points_3d, num_points=segments + 1, sharp_points=state.no_tangent_points, tensions=state.point_tensions, is_closed=is_closed_loop)
+        if len(smooth_radii_3d) >= 2 and not is_closed_loop:
+            smooth_radii_3d[0] = radii_3d[0]
+            smooth_radii_3d[-1] = radii_3d[-1]
 
-            if len(smooth_curve_points_3d) < 2 and len(curve_points_3d) >= 2:
-                smooth_curve_points_3d = math_utils.interpolate_curve_3d(curve_points_3d, num_points=segments + 1, sharp_points=state.no_tangent_points, tensions=state.point_tensions, is_closed=is_closed_loop)
+        helix_curve_points = _apply_helix_to_curve_points(
+            smooth_curve_points_3d,
+            original_control_points=curve_points_3d,
+        )
 
-            if len(smooth_curve_points_3d) > 2 and not is_closed_loop:
-                start_radius = radii_3d[0]
-                end_radius = radii_3d[-1]
-                min_dist_start = start_radius * 0.15
-                min_dist_end = end_radius * 0.15
+        vertices, faces, fill_boundaries, _mesh_info = create_flex_mesh(
+            helix_curve_points,
+            smooth_radii_3d,
+            resolution=resolution,
+            cap_segments=4,
+            original_control_points=curve_points_3d,
+            original_radii=radii_3d,
+            aspect_ratio=state.profile_aspect_ratio,
+            global_twist=state.profile_global_twist,
+            point_twists=state.profile_point_twists,
+            start_cap_type=state.start_cap_type,
+            end_cap_type=state.end_cap_type,
+        )
 
-                filtered_points = [smooth_curve_points_3d[0]]
-                for pt in smooth_curve_points_3d[1:-1]:
-                    dist_to_start = (pt - smooth_curve_points_3d[0]).length
-                    dist_to_end = (pt - smooth_curve_points_3d[-1]).length
-                    if dist_to_start >= min_dist_start and dist_to_end >= min_dist_end:
-                        filtered_points.append(pt)
-                filtered_points.append(smooth_curve_points_3d[-1])
-                smooth_curve_points_3d = filtered_points
-
-            smooth_radii_3d = math_utils.calculate_smooth_radii(curve_points_3d, radii_3d, smooth_curve_points_3d, tensions=state.point_tensions, sharp_points=state.no_tangent_points, is_closed=is_closed_loop)
-
-            if len(smooth_radii_3d) >= 2 and not is_closed_loop:
-                smooth_radii_3d[0] = radii_3d[0]
-                smooth_radii_3d[-1] = radii_3d[-1]
-
-            helix_curve_points = _apply_helix_to_curve_points(
-                smooth_curve_points_3d,
-                original_control_points=curve_points_3d,
-            )
-
-            vertices, faces, fill_boundaries, _mesh_info = create_flex_mesh(
-                helix_curve_points,
-                smooth_radii_3d, 
-                resolution=resolution, 
-                cap_segments=4, 
-                original_control_points=curve_points_3d, 
-                original_radii=radii_3d,
-                aspect_ratio=state.profile_aspect_ratio,
-                global_twist=state.profile_global_twist,
-                point_twists=state.profile_point_twists,
-                start_cap_type=state.start_cap_type,
-                end_cap_type=state.end_cap_type
-            )
-            
-            mesh = state.preview_mesh_obj.data
-            mesh.clear_geometry()
-            if vertices is not None:
-                mesh.from_pydata(vertices, [], faces)
-                if fill_boundaries:
-                    fill_boundary_loops(mesh, fill_boundaries)
-                mesh.update()
-            else:
-                mesh.update()
-        else:
-            if getattr(state, 'bspline_mode', False):
-                smooth_curve_points_3d = math_utils.bspline_cubic_open_uniform(
-                    curve_points_3d, segments + 1, is_closed=is_closed_loop
-                )
-            else:
-                smooth_curve_points_3d = math_utils.interpolate_curve_3d(
-                    curve_points_3d,
-                    num_points=segments + 1,
-                    sharp_points=state.no_tangent_points,
-                    tensions=state.point_tensions,
-                    is_closed=is_closed_loop
-                )
-            smooth_radii_3d = math_utils.calculate_smooth_radii(
-                curve_points_3d,
-                radii_3d,
-                smooth_curve_points_3d,
-                tensions=state.point_tensions,
-                sharp_points=state.no_tangent_points,
-                is_closed=is_closed_loop
-            )
-
-            if len(smooth_radii_3d) >= 2 and not is_closed_loop:
-                smooth_radii_3d[0] = radii_3d[0]
-                smooth_radii_3d[-1] = radii_3d[-1]
-
-            helix_curve_points = _apply_helix_to_curve_points(
-                smooth_curve_points_3d,
-                original_control_points=curve_points_3d,
-            )
-
-            vertices, faces, fill_boundaries, _mesh_info = create_flex_mesh(
-                helix_curve_points,
-                smooth_radii_3d,
-                resolution=resolution,
-                cap_segments=4,
-                original_control_points=curve_points_3d,
-                original_radii=radii_3d,
-                aspect_ratio=state.profile_aspect_ratio,
-                global_twist=state.profile_global_twist,
-                point_twists=state.profile_point_twists,
-                start_cap_type=state.start_cap_type,
-                end_cap_type=state.end_cap_type
-            )
-            mesh = state.preview_mesh_obj.data
-            mesh.clear_geometry()
-            if vertices is not None:
-                mesh.from_pydata(vertices, [], faces)
-                if fill_boundaries:
-                    fill_boundary_loops(mesh, fill_boundaries)
-                mesh.update()
-            else:
-                mesh.update()
+        mesh = state.preview_mesh_obj.data
+        mesh.clear_geometry()
+        if vertices is not None:
+            mesh.from_pydata(vertices, [], faces)
+            if fill_boundaries:
+                fill_boundary_loops(mesh, fill_boundaries)
+        mesh.update()
 
 
 def register():

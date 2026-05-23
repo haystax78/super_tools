@@ -185,7 +185,42 @@ def handle_left_mouse(operator, context, event):
         if state.hover_on_curve and state.hover_curve_point_3d is not None and state.hover_curve_segment >= 0:
             state.save_history_state()
             new_point_3d = state.hover_curve_point_3d.copy()
-            closest_segment, min_dist = math_utils.find_closest_segment_to_point(state.points_3d, new_point_3d)
+            if state.snapping_mode == state.SNAPPING_FACE:
+                snapped_point_3d = conversion.get_3d_from_mouse(
+                    context,
+                    mouse_pos,
+                    require_face_hit=True,
+                )
+                if snapped_point_3d is not None:
+                    new_point_3d = snapped_point_3d
+            is_closed_loop = (
+                int(getattr(state, 'start_cap_type', 1)) == 3
+                or int(getattr(state, 'end_cap_type', 1)) == 3
+            )
+            seam_segment_index = len(state.points_3d) - 1
+            if is_closed_loop and state.hover_curve_segment == seam_segment_index:
+                operator._add_point_to_closest_end(
+                    context,
+                    mouse_pos,
+                    new_point_3d,
+                )
+                state.ensure_helix_point_arrays()
+                state.enforce_closed_loop_point_requirement()
+                if len(state.points_3d) >= 2 and len(state.point_radii_3d) >= 2:
+                    mesh_utils.update_preview_mesh(
+                        context,
+                        state.points_3d,
+                        state.point_radii_3d,
+                        resolution=operator.resolution,
+                        segments=operator.segments,
+                    )
+                return {'RUNNING_MODAL'}
+            closest_segment = state.hover_curve_segment
+            if closest_segment < 0 or closest_segment >= len(state.points_3d) - 1:
+                closest_segment, min_dist = math_utils.find_closest_segment_to_point(
+                    state.points_3d,
+                    new_point_3d,
+                )
             
             state.points_3d.insert(closest_segment + 1, new_point_3d)
             
@@ -251,6 +286,8 @@ def handle_left_mouse(operator, context, event):
                 state.helix_point_slants[insert_idx] = (
                     (prev_slant + next_slant) * 0.5
                 )
+
+            state.enforce_closed_loop_point_requirement()
             
             state.creating_point_index = closest_segment + 1
             state.creating_point_start_pos = new_point_3d.copy()
@@ -383,6 +420,7 @@ def handle_right_mouse(operator, context, event):
             else:
                 updated_no_tangent.add(idx)
         state.no_tangent_points = updated_no_tangent
+        fallback_applied = state.enforce_closed_loop_point_requirement()
         
         state.hover_point_index = -1
         
@@ -393,7 +431,10 @@ def handle_right_mouse(operator, context, event):
         if getattr(state, 'mirror_mode_active', False) and state.preview_mesh_obj is not None:
             mesh_utils.update_mirror_flip_from_points(state.preview_mesh_obj, state.points_3d)
         
-        operator.report({'INFO'}, f"Deleted point {delete_index}")
+        if fallback_applied:
+            operator.report({'INFO'}, "Closed Loop requires at least 3 control points. Switched to Planar end caps.")
+        else:
+            operator.report({'INFO'}, f"Deleted point {delete_index}")
         return {'RUNNING_MODAL'}
     
     # No point under cursor: start radius scale mode

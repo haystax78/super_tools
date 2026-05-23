@@ -2,10 +2,16 @@
 
 A Blender addon that provides advanced mesh editing tools for enhanced modeling workflows.
 
-## What's New in v1.2.8
+## What's New in v1.2.9
 
-- **Flex Tool UV Generation**:
-  - 'Closed loop' end cap mode added
+- **Flex Tool Bug Fixes**:
+  - 'Closed loop' geometry seam offset issue resolved
+  - Placing first curve point now respects face projection
+  - Inserting points within closed loop seam now works correctly
+  - Inserting points now respects face projection
+  - Point indexing improved for more reliable placement during point insertion
+  - Preview curve shown during flex modal now correctly shows closed loop path when enabled
+  - Closed loop mode is now disabled if the curve has fewer than 3 points
 
 ## Features
 
@@ -70,6 +76,16 @@ A Blender addon that provides advanced mesh editing tools for enhanced modeling 
 - Blender 4.5 or later
 
 ## Changelog
+
+### v1.2.9
+- Flex Tool Bug Fixes:
+  - 'Closed loop' geometry seam offset issue resolved
+  - Placing first curve point now respects face projection
+  - Inserting points within closed loop seam now works correctly
+  - Inserting points now respects face projection
+  - Point indexing improved for more reliable placement during point insertion
+  - Preview curve shown during flex modal now correctly shows closed loop path when enabled
+  - Closed loop mode is now disabled if the curve has fewer than 3 points
 
 ### v1.2.8
 - Flex Tool: Added 'Closed loop' end cap mode.

@@ -82,6 +82,19 @@ class FlexState:
         except Exception:
             pass
         return None
+
+    def enforce_closed_loop_point_requirement(self):
+        """Disable closed loop cap mode when fewer than three points exist."""
+        if len(self.points_3d) >= 3:
+            return False
+        changed = False
+        if self.start_cap_type == 3:
+            self.start_cap_type = 2
+            changed = True
+        if self.end_cap_type == 3:
+            self.end_cap_type = 2
+            changed = True
+        return changed
     
     def __init__(self):
         """Initialize all state variables to default values."""

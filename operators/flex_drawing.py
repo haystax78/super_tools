@@ -845,17 +845,23 @@ def draw_callback_px(operator, context):
                 screen_radii.append(screen_radius)
         
         if len(points_2d) > 1 and len(state.points_3d) > 1:
+            is_closed_loop = (
+                int(getattr(state, 'start_cap_type', 1)) == 3
+                or int(getattr(state, 'end_cap_type', 1)) == 3
+            )
             if getattr(state, 'bspline_mode', False):
                 smooth_curve_points_3d = math_utils.bspline_cubic_open_uniform(
                     state.points_3d,
-                    300
+                    300,
+                    is_closed=is_closed_loop,
                 )
             else:
                 smooth_curve_points_3d = math_utils.interpolate_curve_3d(
                     state.points_3d, 
                     num_points=300,
                     sharp_points=state.no_tangent_points,
-                    tensions=state.point_tensions
+                    tensions=state.point_tensions,
+                    is_closed=is_closed_loop,
                 )
             
             curve_points_2d = []
@@ -863,6 +869,11 @@ def draw_callback_px(operator, context):
                 point_2d = conversion.get_2d_from_3d(context, point_3d)
                 if point_2d is not None:
                     curve_points_2d.append((point_2d[0], point_2d[1], 0))
+            if is_closed_loop and len(curve_points_2d) > 1:
+                first_point = curve_points_2d[0]
+                last_point = curve_points_2d[-1]
+                if first_point != last_point:
+                    curve_points_2d.append(first_point)
             
             line_width = 4.0 if state.hover_on_curve else 3.0
             line_color = (0.2, 0.8, 1.0, 1.0) if state.hover_on_curve else (1.0, 1.0, 1.0, 1.0)
@@ -894,6 +905,8 @@ def draw_callback_px(operator, context):
                     ctrl_vertices = []
                     for p in points_2d:
                         ctrl_vertices.append((p[0], p[1], 0.0, *ctrl_color))
+                    if is_closed_loop and len(ctrl_vertices) > 1:
+                        ctrl_vertices.append(ctrl_vertices[0])
                     batch_ctrl = batch_for_shader(
                         shader_ctrl, 'LINE_STRIP',
                         {

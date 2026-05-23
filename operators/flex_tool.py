@@ -309,6 +309,7 @@ class MESH_OT_flex_create(FlexOperatorBase):
                     state.profile_point_twists.append(0.0)
 
                 state.ensure_helix_point_arrays()
+                state.enforce_closed_loop_point_requirement()
 
                 if "resolution" in curve_data:
                     self.resolution = curve_data["resolution"]

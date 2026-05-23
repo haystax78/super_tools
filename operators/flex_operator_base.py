@@ -127,6 +127,14 @@ class FlexOperatorBase(bpy.types.Operator):
 
         # First point: use special depth logic
         if len(state.points_3d) == 0:
+            if state.snapping_mode == state.SNAPPING_FACE:
+                first_point = conversion.get_3d_from_mouse(
+                    context,
+                    mouse_pos,
+                    require_face_hit=True,
+                )
+                if first_point is not None:
+                    return first_point
             first_point = conversion.get_3d_from_mouse(context, mouse_pos, use_special_depth_logic=True)
             if first_point is not None:
                 return first_point
