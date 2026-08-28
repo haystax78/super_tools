@@ -2,6 +2,17 @@
 
 A Blender addon that provides advanced mesh editing tools for enhanced modeling workflows.
 
+## What's New in v1.3.0
+
+- **Flex Tool Custom Profile Editor**:
+  - Dedicated in-viewport profile editor window with background, major/minor grid, and border
+  - Ctrl snaps new, inserted, and dragged profile points to the nearest grid intersection
+  - Symmetry plane centered on the editor window instead of the profile geometry
+  - New profile points are placed on LMB release and can be dragged before release
+  - Profile interaction is constrained to the editor box
+- **Flex Tool**: 15-degree screen-space angle snapping while holding Ctrl when placing new 3D curve points
+- Various profile editor stability and UX fixes
+
 ## What's New in v1.2.9
 
 - **Flex Tool Bug Fixes**:
@@ -76,6 +87,16 @@ A Blender addon that provides advanced mesh editing tools for enhanced modeling 
 - Blender 4.5 or later
 
 ## Changelog
+
+### v1.3.0
+- Flex Tool Custom Profile Editor:
+  - Dedicated in-viewport profile editor window with background, major/minor grid, and border
+  - Ctrl snaps new, inserted, and dragged profile points to the nearest grid intersection
+  - Symmetry plane centered on the editor window instead of the profile geometry
+  - New profile points are placed on LMB release and can be dragged before release
+  - Profile interaction is constrained to the editor box
+- Flex Tool: 15-degree screen-space angle snapping while holding Ctrl when placing new 3D curve points
+- Various profile editor stability and UX fixes
 
 ### v1.2.9
 - Flex Tool Bug Fixes:

@@ -18,6 +18,7 @@ from ..utils import flex_mesh as mesh_utils
 def handle_left_mouse(operator, context, event):
     """Handle left mouse button events for point creation and manipulation"""
     mouse_pos = (event.mouse_region_x, event.mouse_region_y)
+    state.angle_snap_active = bool(getattr(event, 'ctrl', False))
     
     if event.value == 'PRESS':
         # Check if we're in twist mode
@@ -294,7 +295,12 @@ def handle_left_mouse(operator, context, event):
         else:
             # Add new point to closest end
             state.save_history_state()
-            new_point_3d = operator._get_new_point_3d(context, mouse_pos)
+            placement_mouse_pos = mouse_pos
+            if event.ctrl and len(state.points_3d) > 0:
+                placement_mouse_pos = math_utils.snap_mouse_angle_to_last_point(
+                    context, mouse_pos
+                )
+            new_point_3d = operator._get_new_point_3d(context, placement_mouse_pos)
             
             if new_point_3d is None:
                 return {'PASS_THROUGH'}
@@ -302,7 +308,7 @@ def handle_left_mouse(operator, context, event):
             if len(state.points_3d) == 0:
                 operator._add_first_point(new_point_3d)
             else:
-                operator._add_point_to_closest_end(context, mouse_pos, new_point_3d)
+                operator._add_point_to_closest_end(context, placement_mouse_pos, new_point_3d)
 
             state.ensure_helix_point_arrays()
         
@@ -454,6 +460,7 @@ def handle_mouse_move(operator, context, event):
     """Handle mouse movement for dragging, adjusting, and hovering"""
     mouse_pos = (event.mouse_region_x, event.mouse_region_y)
     state.last_mouse_pos = mouse_pos
+    state.angle_snap_active = bool(getattr(event, 'ctrl', False))
 
     if (
         getattr(state, 'profile_helix_mode', False)

@@ -102,6 +102,7 @@ class VIEW3D_PT_flex_shortcuts(bpy.types.Panel):
         col.label(text="R: Cycle roundness")
         col.label(text="Ctrl+Z: Undo")
         col.label(text="Ctrl+Shift+Z: Redo")
+        col.label(text="Ctrl: Angle snap (15° steps)")
 
 
 classes = (

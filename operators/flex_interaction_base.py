@@ -723,7 +723,10 @@ def modal_handler(operator, context, event):
             slot_symmetry = state.custom_profile_slot_symmetry[slot_index] if slot_index < len(state.custom_profile_slot_symmetry) else False
             state.custom_profile_symmetry = slot_symmetry
             state.custom_profile_symmetry_angle = 0.0  # Always start with vertical axis
-            state.custom_profile_symmetry_center = None  # Will be set after screen points are generated
+            profile_box = math_utils.get_profile_editor_box(context)
+            state.custom_profile_symmetry_center = (
+                profile_box["center"] if profile_box is not None else None
+            )
             state.custom_profile_point_pairs = {}
             
             if state.custom_profile_points and len(state.custom_profile_points) >= 3:
@@ -731,8 +734,10 @@ def modal_handler(operator, context, event):
                 
                 # If symmetry was enabled, filter to only right-side points
                 if slot_symmetry and len(screen_points) >= 2:
-                    center = _get_profile_center(screen_points)
-                    state.custom_profile_symmetry_center = center
+                    center = state.custom_profile_symmetry_center
+                    if center is None:
+                        center = _get_profile_center(screen_points)
+                        state.custom_profile_symmetry_center = center
                     # Keep only right-side points (positive X relative to center after rotation)
                     right_side_points = []
                     for pt in screen_points:
@@ -1256,7 +1261,18 @@ def modal_handler(operator, context, event):
             return switch_target_flex(operator, context, event)
 
     if event.type == 'LEFTMOUSE':
-        if event.alt or event.ctrl or event.shift or event.oskey:
+        if event.alt or event.shift or event.oskey:
+            return {'PASS_THROUGH'}
+        if event.ctrl:
+            # Ctrl+LMB places a new point with angle snapping. Only intercept
+            # empty-space clicks; hover interactions keep their normal behavior.
+            if (
+                state.hover_point_index == -1
+                and state.hover_radius_index == -1
+                and state.hover_tension_index == -1
+                and not state.hover_on_curve
+            ):
+                return flex_interaction_points.handle_left_mouse(operator, context, event)
             return {'PASS_THROUGH'}
         return flex_interaction_points.handle_left_mouse(operator, context, event)
     
@@ -1281,10 +1297,11 @@ def _handle_custom_profile_mode(operator, context, event):
     """Handle events while in custom profile drawing mode"""
     mouse_pos = (event.mouse_region_x, event.mouse_region_y)
     screen_points = state._custom_profile_data.get('screen_points', [])
+    box = math_utils.get_profile_editor_box(context)
     
     # LMB to add/drag points
     if event.type == 'LEFTMOUSE':
-        if event.alt or event.ctrl or event.shift or event.oskey:
+        if event.alt or event.shift or event.oskey:
             return None  # Pass through
         
         if event.value == 'PRESS':
@@ -1297,7 +1314,13 @@ def _handle_custom_profile_mode(operator, context, event):
             # Check edge hover for insertion
             if state.custom_profile_hover_edge >= 0 and state.custom_profile_hover_edge_point is not None:
                 insert_idx = state.custom_profile_hover_edge + 1
-                insert_point = state.custom_profile_hover_edge_point
+                insert_point = math_utils.clamp_point_to_profile_editor_box(
+                    state.custom_profile_hover_edge_point, box
+                )
+                if event.ctrl:
+                    insert_point = math_utils.snap_point_to_profile_grid(
+                        insert_point, box
+                    )
                 
                 # In symmetry mode, validate insertion point is on right side
                 if getattr(state, 'custom_profile_symmetry', False):
@@ -1326,18 +1349,21 @@ def _handle_custom_profile_mode(operator, context, event):
                 return {'RUNNING_MODAL'}
             
             # Add new point (with symmetry restrictions if enabled)
+            clamped_mouse = math_utils.clamp_point_to_profile_editor_box(mouse_pos, box)
+            if event.ctrl:
+                clamped_mouse = math_utils.snap_point_to_profile_grid(clamped_mouse, box)
             if getattr(state, 'custom_profile_symmetry', False):
                 # In symmetry mode, only allow points on right side
                 # Use the fixed symmetry center
                 center = state.custom_profile_symmetry_center
                 angle = state.custom_profile_symmetry_angle
                 
-                if not _is_point_on_right_side(mouse_pos, center, angle):
+                if not _is_point_on_right_side(clamped_mouse, center, angle):
                     operator.report({'WARNING'}, "Place points on the right side of symmetry line")
                     return {'RUNNING_MODAL'}
                 
                 # Add point to right-side collection
-                screen_points.append(mouse_pos)
+                screen_points.append(clamped_mouse)
                 state._custom_profile_data['screen_points'] = screen_points
                 operator.report({'INFO'}, f"Profile point {len(screen_points)} added (right side)")
                 
@@ -1345,11 +1371,13 @@ def _handle_custom_profile_mode(operator, context, event):
                 full_profile = _generate_symmetric_profile(screen_points, center, angle)
                 _update_mesh_from_profile_edit(operator, context, full_profile)
             else:
-                screen_points.append(mouse_pos)
+                screen_points.append(clamped_mouse)
                 state._custom_profile_data['screen_points'] = screen_points
                 operator.report({'INFO'}, f"Profile point {len(screen_points)} added")
                 _update_mesh_from_profile_edit(operator, context, screen_points)
             
+            # Keep the new point active so it can be dragged until LMB release.
+            state.custom_profile_active_index = len(screen_points) - 1
             context.area.tag_redraw()
             return {'RUNNING_MODAL'}
         
@@ -1437,12 +1465,16 @@ def _handle_custom_profile_mode(operator, context, event):
     if event.type == 'X' and event.value == 'PRESS':
         state.custom_profile_symmetry = not state.custom_profile_symmetry
         if state.custom_profile_symmetry:
-            # Lock the symmetry center when enabling
+            # Lock the symmetry center to the profile editor window center.
+            if box is not None:
+                center = box["center"]
+            else:
+                region = context.region
+                center = (region.width / 2, region.height / 2)
+            state.custom_profile_symmetry_center = center
+            angle = state.custom_profile_symmetry_angle
+
             if len(screen_points) >= 1:
-                center = _get_profile_center(screen_points)
-                state.custom_profile_symmetry_center = center
-                angle = state.custom_profile_symmetry_angle
-                
                 # Extract right-side points and generate center crossing points
                 new_points = _extract_right_side_with_crossings(screen_points, center, angle)
                 screen_points.clear()
@@ -1452,10 +1484,6 @@ def _handle_custom_profile_mode(operator, context, event):
                 # Update mesh preview with symmetric profile
                 full_profile = _generate_symmetric_profile(screen_points, center, angle)
                 _update_mesh_from_profile_edit(operator, context, full_profile)
-            else:
-                # Use screen center if no points yet
-                region = context.region
-                state.custom_profile_symmetry_center = (region.width / 2, region.height / 2)
         else:
             # When disabling symmetry, realize mirrored points as real editable points
             if len(screen_points) >= 1 and state.custom_profile_symmetry_center:
@@ -1511,7 +1539,11 @@ def _handle_custom_profile_mode(operator, context, event):
                                           sym_center[1] + dy_pt * scale_factor))
             else:
                 new_points = _scale_profile_points(screen_points, scale_factor)
-            
+
+            new_points = [
+                math_utils.clamp_point_to_profile_editor_box(pt, box)
+                for pt in new_points
+            ]
             state._custom_profile_data['screen_points'] = new_points
             state.custom_profile_transform_start_pos = mouse_pos
             _update_mesh_from_profile_edit(operator, context, new_points)
@@ -1538,7 +1570,11 @@ def _handle_custom_profile_mode(operator, context, event):
                         new_points.append((pt[0] + offset[0], pt[1] + offset[1]))
             else:
                 new_points = _move_profile_points(screen_points, offset)
-            
+
+            new_points = [
+                math_utils.clamp_point_to_profile_editor_box(pt, box)
+                for pt in new_points
+            ]
             state._custom_profile_data['screen_points'] = new_points
             state.custom_profile_transform_start_pos = mouse_pos
             _update_mesh_from_profile_edit(operator, context, new_points)
@@ -1547,6 +1583,9 @@ def _handle_custom_profile_mode(operator, context, event):
         
         # Handle point dragging
         if state.custom_profile_active_index >= 0 and state.custom_profile_active_index < len(screen_points):
+            clamped_mouse = math_utils.clamp_point_to_profile_editor_box(mouse_pos, box)
+            if event.ctrl:
+                clamped_mouse = math_utils.snap_point_to_profile_grid(clamped_mouse, box)
             # In symmetry mode, constrain movement
             if getattr(state, 'custom_profile_symmetry', False):
                 center = state.custom_profile_symmetry_center
@@ -1556,18 +1595,21 @@ def _handle_custom_profile_mode(operator, context, event):
                 # Check if this point is on the axis (center point)
                 if center and _is_point_on_axis(current_pt, center, angle):
                     # Center point - lock to axis, only allow movement along it
-                    new_pos = _project_point_to_axis(mouse_pos, center, angle)
+                    new_pos = _project_point_to_axis(clamped_mouse, center, angle)
+                    if event.ctrl:
+                        new_pos = math_utils.snap_point_to_profile_grid(new_pos, box)
+                    new_pos = math_utils.clamp_point_to_profile_editor_box(new_pos, box)
                     screen_points[state.custom_profile_active_index] = new_pos
                     full_profile = _generate_symmetric_profile(screen_points, center, angle)
                     _update_mesh_from_profile_edit(operator, context, full_profile)
-                elif center and _is_point_on_right_side(mouse_pos, center, angle):
+                elif center and _is_point_on_right_side(clamped_mouse, center, angle):
                     # Right-side point - allow free movement on right side
-                    screen_points[state.custom_profile_active_index] = mouse_pos
+                    screen_points[state.custom_profile_active_index] = clamped_mouse
                     full_profile = _generate_symmetric_profile(screen_points, center, angle)
                     _update_mesh_from_profile_edit(operator, context, full_profile)
                 # Else: trying to drag to left side - don't move
             else:
-                screen_points[state.custom_profile_active_index] = mouse_pos
+                screen_points[state.custom_profile_active_index] = clamped_mouse
                 _update_mesh_from_profile_edit(operator, context, screen_points)
             context.area.tag_redraw()
             return {'RUNNING_MODAL'}

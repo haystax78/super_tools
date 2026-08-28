@@ -271,7 +271,15 @@ class CursorHUD:
             'text': f"Snapping [{snapping_key}] - {snapping_label}",
             'color': (0.8, 0.8, 0.3)
         })
-        
+
+        angle_snap_active = bool(getattr(state, 'angle_snap_active', False))
+        if angle_snap_active and len(getattr(state, 'points_3d', [])) > 0:
+            slots.append({
+                'id': 'angle_snap',
+                'text': 'Angle Snap [Ctrl] - 15°',
+                'color': (0.2, 1.0, 0.6)
+            })
+
         adaptive_on = bool(getattr(state, 'adaptive_segmentation', False))
         adaptive_key = getattr(state, 'KEY_ADAPTIVE', 'A')
         status_text = 'ON' if adaptive_on else 'OFF'
@@ -456,6 +464,112 @@ def create_circle_vertices(center_x, center_y, radius, segments=32):
     return vertices
 
 
+def _draw_profile_editor_box(context, shader_fill, shader_line):
+    """Draw the profile editor window background, grid, and border."""
+    box = math_utils.get_profile_editor_box(context)
+    if box is None:
+        return
+
+    region = getattr(context, "region", None)
+    if region is None:
+        region = bpy.context.region
+    if region is None:
+        return
+
+    left = box["left"]
+    right = box["right"]
+    bottom = box["bottom"]
+    top = box["top"]
+
+    # Background
+    gpu.state.blend_set('ALPHA')
+    gpu.state.depth_test_set('NONE')
+    bg_verts = [
+        (left, bottom, 0.0),
+        (right, bottom, 0.0),
+        (right, top, 0.0),
+        (left, top, 0.0),
+    ]
+    batch_bg = batch_for_shader(shader_fill, 'TRI_FAN', {"pos": bg_verts})
+    shader_fill.bind()
+    shader_fill.uniform_float("color", (0.04, 0.05, 0.06, 0.7))
+    batch_bg.draw(shader_fill)
+
+    # Grid (major lines with finer minor subdivisions)
+    minor_step = box["grid_step"]
+    major_every = box.get("grid_major_every", 4)
+
+    minor_color = (0.32, 0.35, 0.40, 0.20)
+    major_color = (0.45, 0.50, 0.55, 0.45)
+    minor_verts = []
+    minor_colors = []
+    major_verts = []
+    major_colors = []
+
+    def _add_line(verts, colors, p1, p2, color):
+        verts.append(p1)
+        verts.append(p2)
+        colors.append(color)
+        colors.append(color)
+
+    index = 0
+    x = left
+    while x <= right + 1e-6:
+        if index % major_every == 0:
+            _add_line(major_verts, major_colors, (x, bottom, 0.0), (x, top, 0.0), major_color)
+        else:
+            _add_line(minor_verts, minor_colors, (x, bottom, 0.0), (x, top, 0.0), minor_color)
+        index += 1
+        x += minor_step
+
+    index = 0
+    y = bottom
+    while y <= top + 1e-6:
+        if index % major_every == 0:
+            _add_line(major_verts, major_colors, (left, y, 0.0), (right, y, 0.0), major_color)
+        else:
+            _add_line(minor_verts, minor_colors, (left, y, 0.0), (right, y, 0.0), minor_color)
+        index += 1
+        y += minor_step
+
+    def _draw_grid_lines(verts, colors):
+        if not verts:
+            return
+        batch_grid = batch_for_shader(
+            shader_line, 'LINES',
+            {"pos": verts, "color": colors}
+        )
+        shader_line.bind()
+        shader_line.uniform_float("lineWidth", 1.0)
+        shader_line.uniform_float(
+            "viewportSize", (region.width, region.height)
+        )
+        batch_grid.draw(shader_line)
+
+    _draw_grid_lines(minor_verts, minor_colors)
+    _draw_grid_lines(major_verts, major_colors)
+
+    # Border
+    border_verts = [
+        (left, bottom, 0.0),
+        (right, bottom, 0.0),
+        (right, top, 0.0),
+        (left, top, 0.0),
+        (left, bottom, 0.0),
+    ]
+    border_colors = [(0.7, 0.75, 0.8, 1.0)] * 5
+    batch_border = batch_for_shader(
+        shader_line, 'LINE_STRIP',
+        {"pos": border_verts, "color": border_colors}
+    )
+    shader_line.bind()
+    shader_line.uniform_float("lineWidth", 2.0)
+    shader_line.uniform_float(
+        "viewportSize", (region.width, region.height)
+    )
+    batch_border.draw(shader_line)
+
+
 def draw_callback_px(operator, context):
     """Draw the curve points and lines in the viewport"""
     if not state.is_running:
@@ -469,7 +583,9 @@ def draw_callback_px(operator, context):
         
         shader_fill = gpu.shader.from_builtin('UNIFORM_COLOR')
         shader_line = gpu.shader.from_builtin('POLYLINE_SMOOTH_COLOR')
-        
+
+        _draw_profile_editor_box(context, shader_fill, shader_line)
+
         # Draw symmetry line if enabled
         if getattr(state, 'custom_profile_symmetry', False):
             region = bpy.context.region
@@ -673,9 +789,11 @@ def draw_callback_px(operator, context):
     ):
         try:
             mx, my = state.last_mouse_pos
+            if getattr(state, 'angle_snap_active', False):
+                mx, my = math_utils.snap_mouse_angle_to_last_point(context, (mx, my))
             candidate_point = None
             try:
-                candidate_point = operator._get_new_point_3d(context, state.last_mouse_pos)
+                candidate_point = operator._get_new_point_3d(context, (mx, my))
             except Exception:
                 candidate_point = None
             base_radius_3d = state.DEFAULT_RADIUS
@@ -827,7 +945,7 @@ def draw_callback_px(operator, context):
         except Exception:
             pass
     
-    if len(state.points_3d) > 0:
+    if len(state.points_3d) > 0 and not profile_draw_active:
         gpu.state.blend_set('ALPHA')
         gpu.state.depth_test_set('NONE')
         gpu.state.depth_mask_set(False)
@@ -1089,7 +1207,7 @@ def draw_callback_px(operator, context):
 
     # Draw dashed link from first point to chosen parent when set (not None and not empty string)
     selected_parent_for_line = getattr(state, 'selected_parent_name', None)
-    if selected_parent_for_line is not None and selected_parent_for_line != "" and len(state.points_3d) >= 1:
+    if selected_parent_for_line is not None and selected_parent_for_line != "" and len(state.points_3d) >= 1 and not profile_draw_active:
         try:
             parent_obj = bpy.data.objects.get(state.selected_parent_name)
             if parent_obj is not None and len(state.points_3d) >= 1:

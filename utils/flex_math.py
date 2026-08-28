@@ -3,6 +3,7 @@ Mathematical utilities for the Flex tool in Super Tools addon.
 Handles curve interpolation, coordinate system calculations, and other math functions.
 """
 import math
+import bpy
 from mathutils import Vector, Matrix
 from .flex_state import state
 from . import flex_conversion as conversion
@@ -48,6 +49,111 @@ def get_curve_tangent(points_3d, index):
         v1 = (points_3d[index] - points_3d[index-1]).normalized()
         v2 = (points_3d[index+1] - points_3d[index]).normalized()
         return (v1 + v2).normalized() if (v1 + v2).length > 1e-6 else v2
+
+
+PROFILE_GRID_MAJOR_DIVISIONS = 10
+PROFILE_GRID_MINOR_SUBDIVISIONS = 4
+PROFILE_GRID_DIVISIONS = PROFILE_GRID_MAJOR_DIVISIONS * PROFILE_GRID_MINOR_SUBDIVISIONS
+
+
+def get_profile_editor_box(context):
+    """Return the profile editor box bounds for the active viewport region.
+
+    The box is a square centered in the region, sized relative to the smaller
+    region dimension so it stays visible regardless of viewport aspect.
+    """
+    region = getattr(context, "region", None)
+    if region is None:
+        region = getattr(bpy.context, "region", None)
+    if region is None:
+        return None
+
+    w = region.width
+    h = region.height
+    size = min(w, h) * 0.6
+    half = size * 0.5
+    cx = w * 0.5
+    cy = h * 0.5
+
+    return {
+        "left": cx - half,
+        "right": cx + half,
+        "bottom": cy - half,
+        "top": cy + half,
+        "center": (cx, cy),
+        "half": half,
+        "size": size,
+        "grid_divisions": PROFILE_GRID_DIVISIONS,
+        "grid_step": size / PROFILE_GRID_DIVISIONS,
+        "grid_major_every": PROFILE_GRID_MINOR_SUBDIVISIONS,
+    }
+
+
+def clamp_point_to_profile_editor_box(point, box):
+    """Clamp a screen-space point to the profile editor box bounds."""
+    if box is None:
+        return (float(point[0]), float(point[1]))
+
+    x = max(box["left"], min(box["right"], point[0]))
+    y = max(box["bottom"], min(box["top"], point[1]))
+    return (x, y)
+
+
+def snap_point_to_profile_grid(point, box):
+    """Snap a screen-space point to the nearest profile grid intersection."""
+    if box is None:
+        return (float(point[0]), float(point[1]))
+
+    step = box["grid_step"]
+    if step <= 0:
+        return (float(point[0]), float(point[1]))
+
+    x = math.floor((point[0] - box["left"]) / step + 0.5) * step + box["left"]
+    y = math.floor((point[1] - box["bottom"]) / step + 0.5) * step + box["bottom"]
+
+    x = max(box["left"], min(box["right"], x))
+    y = max(box["bottom"], min(box["top"], y))
+    return (x, y)
+
+
+def snap_mouse_angle_to_last_point(context, mouse_pos, angle_step_degrees=15.0):
+    """Snap a screen-space mouse position so its angle from the nearest curve
+    endpoint is a multiple of angle_step_degrees, preserving the cursor distance.
+    """
+    if len(state.points_3d) < 1:
+        return mouse_pos
+
+    mx, my = mouse_pos
+    start_2d = conversion.get_2d_from_3d(context, state.points_3d[0])
+    end_2d = conversion.get_2d_from_3d(context, state.points_3d[-1])
+
+    anchor_2d = None
+    if start_2d is not None and end_2d is not None:
+        ds = (mx - start_2d[0]) ** 2 + (my - start_2d[1]) ** 2
+        de = (mx - end_2d[0]) ** 2 + (my - end_2d[1]) ** 2
+        anchor_2d = start_2d if ds < de else end_2d
+    elif start_2d is not None:
+        anchor_2d = start_2d
+    elif end_2d is not None:
+        anchor_2d = end_2d
+
+    if anchor_2d is None:
+        return mouse_pos
+
+    dx = mx - anchor_2d[0]
+    dy = my - anchor_2d[1]
+    dist = math.hypot(dx, dy)
+    if dist < 1e-6:
+        return mouse_pos
+
+    angle = math.atan2(dy, dx)
+    step = math.radians(angle_step_degrees)
+    snapped_angle = math.floor(angle / step + 0.5) * step
+
+    return (
+        anchor_2d[0] + math.cos(snapped_angle) * dist,
+        anchor_2d[1] + math.sin(snapped_angle) * dist,
+    )
 
 
 def find_closest_segment_to_point(points_3d, point_3d, is_closed=False):

@@ -244,6 +244,7 @@ class FlexState:
         
         # Input tracking
         self.last_mouse_pos = None
+        self.angle_snap_active = False
         self.tension_drag_start_angle = None
         self.tension_drag_start_value = None
         self.tension_anim_current_index = -1
