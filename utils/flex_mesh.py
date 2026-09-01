@@ -301,6 +301,62 @@ def _apply_helix_to_curve_points(curve_points, original_control_points=None):
     ):
         return [point.copy() for point in curve_points]
 
+    if is_closed_loop:
+        start_taper_end = 0.0
+        end_taper_start = 1.0
+    elif n_ctrl > 2:
+        start_taper_end = control_t_values[1]
+        end_taper_start = control_t_values[-2]
+    else:
+        start_taper_end = 0.25
+        end_taper_start = 0.75
+
+    endpoint_mode = getattr(
+        state,
+        'helix_endpoint_mode',
+        state.HELIX_ENDPOINT_SMOOTH_TAPER,
+    )
+    start_return_frequency = _sample_helix_profile(
+        control_t_values,
+        point_freqs,
+        start_taper_end,
+    )
+    end_return_frequency = _sample_helix_profile(
+        control_t_values,
+        point_freqs,
+        end_taper_start,
+    )
+    start_return_phase = 2.0 * math.pi * start_return_frequency * start_taper_end
+    end_return_phase = 2.0 * math.pi * end_return_frequency * end_taper_start
+    phase_softness = 0.35
+    start_phase_transition = max(1e-8, start_taper_end * phase_softness)
+    end_phase_transition = max(1e-8, (1.0 - end_taper_start) * phase_softness)
+    phase_epsilon = 1e-5
+    start_previous_t = max(0.0, start_taper_end - phase_epsilon)
+    start_previous_frequency = _sample_helix_profile(
+        control_t_values,
+        point_freqs,
+        start_previous_t,
+    )
+    start_previous_phase = 2.0 * math.pi * start_previous_frequency * start_previous_t
+    start_phase_velocity = (
+        (start_return_phase - start_previous_phase)
+        / max(1e-8, start_taper_end - start_previous_t)
+    )
+    end_next_t = min(1.0, end_taper_start + phase_epsilon)
+    end_next_frequency = _sample_helix_profile(
+        control_t_values,
+        point_freqs,
+        end_next_t,
+    )
+    end_next_phase = 2.0 * math.pi * end_next_frequency * end_next_t
+    end_phase_velocity = (
+        (end_next_phase - end_return_phase)
+        / max(1e-8, end_next_t - end_taper_start)
+    )
+    start_fixed_phase = start_return_phase - 0.5 * start_phase_velocity * start_phase_transition
+    end_fixed_phase = end_return_phase + 0.5 * end_phase_velocity * end_phase_transition
+
     helix_points = []
     for idx, point in enumerate(curve_points):
         t = cumulative_lengths[idx] / total_length
@@ -308,12 +364,99 @@ def _apply_helix_to_curve_points(curve_points, original_control_points=None):
         helix_freq = _sample_helix_profile(control_t_values, point_freqs, t)
         helix_slant = _sample_helix_profile(control_t_values, point_slants, t)
         phase = (2.0 * math.pi * helix_freq) * t
+        if (
+            not is_closed_loop
+            and endpoint_mode != state.HELIX_ENDPOINT_UNMODIFIED
+        ):
+            start_factor = min(1.0, t / max(1e-8, start_taper_end))
+            end_factor = min(1.0, (1.0 - t) / max(1e-8, 1.0 - end_taper_start))
+            taper_factor = min(start_factor, end_factor)
+            taper_factor = taper_factor * taper_factor * (3.0 - 2.0 * taper_factor)
+            helix_mag *= taper_factor
+            helix_slant *= taper_factor
+            if endpoint_mode == state.HELIX_ENDPOINT_CABLE_RETURN:
+                start_transition_t = start_taper_end - start_phase_transition
+                end_transition_t = end_taper_start + end_phase_transition
+                if t < start_transition_t:
+                    phase = start_fixed_phase
+                elif t < start_taper_end:
+                    phase_factor = (t - start_transition_t) / start_phase_transition
+                    phase_integral = phase_factor ** 3 - 0.5 * phase_factor ** 4
+                    phase = start_fixed_phase + start_phase_velocity * start_phase_transition * phase_integral
+                elif t > end_transition_t:
+                    phase = end_fixed_phase
+                elif t > end_taper_start:
+                    phase_factor = (t - end_taper_start) / end_phase_transition
+                    phase_integral = phase_factor - phase_factor ** 3 + 0.5 * phase_factor ** 4
+                    phase = end_return_phase + end_phase_velocity * end_phase_transition * phase_integral
         tangent, side, up = coordinate_systems[idx]
         helix_dir = (side * math.cos(phase)) + (up * math.sin(phase))
         slant_dir = tangent * (helix_slant * math.sin(phase))
         helix_points.append(point + (helix_dir * helix_mag) + slant_dir)
 
     return helix_points
+
+
+def _helix_is_active():
+    magnitudes = list(getattr(state, 'helix_point_magnitudes', []) or [])
+    frequencies = list(getattr(state, 'helix_point_frequencies', []) or [])
+    if not magnitudes:
+        magnitudes = [float(getattr(state, 'helix_magnitude', 0.0))]
+    if not frequencies:
+        frequencies = [float(getattr(state, 'helix_frequency', 0.0))]
+    return (
+        any(abs(float(value)) > 1e-8 for value in magnitudes)
+        and any(float(value) > 1e-8 for value in frequencies)
+    )
+
+
+def _adaptive_resample_deformed_curve(curve_points, values, base_segments, is_closed):
+    if len(curve_points) < 2:
+        return list(curve_points), list(values)
+
+    path_points = list(curve_points)
+    path_values = list(values)
+    if len(path_values) < len(path_points):
+        fill_value = path_values[-1] if path_values else 0.0
+        path_values.extend([fill_value] * (len(path_points) - len(path_values)))
+    if is_closed:
+        path_points.append(curve_points[0])
+        path_values.append(path_values[0])
+
+    total_length = sum(
+        (path_points[index] - path_points[index - 1]).length
+        for index in range(1, len(path_points))
+    )
+    if total_length <= 1e-8:
+        return list(curve_points), list(values)
+
+    target_spacing = total_length / max(1, int(base_segments))
+    max_turn = math.radians(3.0)
+    output_points = [path_points[0]]
+    output_values = [path_values[0]]
+    accumulated_distance = 0.0
+    accumulated_turn = 0.0
+
+    for index in range(1, len(path_points) - 1):
+        previous_segment = path_points[index] - path_points[index - 1]
+        next_segment = path_points[index + 1] - path_points[index]
+        accumulated_distance += previous_segment.length
+        if previous_segment.length > 1e-8 and next_segment.length > 1e-8:
+            dot = max(-1.0, min(1.0, previous_segment.normalized().dot(next_segment.normalized())))
+            accumulated_turn += math.acos(dot)
+
+        if accumulated_distance >= target_spacing or accumulated_turn >= max_turn:
+            output_points.append(path_points[index])
+            output_values.append(path_values[index])
+            accumulated_distance = 0.0
+            accumulated_turn = 0.0
+
+    if not is_closed:
+        output_points.append(path_points[-1])
+        output_values.append(path_values[-1])
+    elif len(output_points) < 3:
+        return list(curve_points), list(values)
+    return output_points, output_values
 
 
 def _get_or_create_mirror_empty():
@@ -1206,15 +1349,20 @@ def create_flex_mesh_from_curve(context, curve_points_3d, radii_3d, resolution=1
     # Check if adaptive segmentation is enabled
     should_run_adaptive = getattr(state, 'adaptive_segmentation', False) and len(curve_points_3d) >= 3
 
+    post_helix_adaptive = should_run_adaptive and _helix_is_active()
+    source_segments = int(segments)
+    if post_helix_adaptive:
+        source_segments = min(2048, max(256, source_segments * 4))
+
     smooth_curve_points_3d = _compute_smooth_curve_points(
         curve_points_3d,
         radii_3d,
-        segments,
+        source_segments,
         no_tangent_points=no_tangent_points,
         tensions=tensions,
         is_closed_loop=is_closed_loop,
         use_bspline=use_bspline,
-        adaptive=should_run_adaptive,
+        adaptive=should_run_adaptive and not post_helix_adaptive,
     )
 
     smooth_radii_3d = math_utils.calculate_smooth_radii(
@@ -1234,6 +1382,13 @@ def create_flex_mesh_from_curve(context, curve_points_3d, radii_3d, resolution=1
         smooth_curve_points_3d,
         original_control_points=curve_points_3d,
     )
+    if post_helix_adaptive:
+        helix_curve_points, smooth_radii_3d = _adaptive_resample_deformed_curve(
+            helix_curve_points,
+            smooth_radii_3d,
+            segments,
+            is_closed_loop,
+        )
 
     vertices, faces, fill_boundaries, mesh_info = create_flex_mesh(
         helix_curve_points,
@@ -1384,11 +1539,502 @@ def create_flex_mesh_from_curve(context, curve_points_3d, radii_3d, resolution=1
     return obj
 
 
-def update_preview_mesh(context, curve_points_3d, radii_3d, resolution=16, segments=32):
+def _get_preview_material():
+    mat = bpy.data.materials.get("Flex_Preview_Material")
+    if mat is not None:
+        return mat
+
+    mat = bpy.data.materials.new("Flex_Preview_Material")
+    mat.use_nodes = True
+    nodes = mat.node_tree.nodes
+    nodes.clear()
+    bsdf = nodes.new(type='ShaderNodeBsdfPrincipled')
+    bsdf.inputs['Base Color'].default_value = (0.00127, 0.169, 0.376, 1.0)
+    bsdf.inputs['Metallic'].default_value = 0.0
+    bsdf.inputs['Roughness'].default_value = 0.8
+    if 'Specular' in bsdf.inputs:
+        bsdf.inputs['Specular'].default_value = 0.5
+    elif 'Specular IOR Level' in bsdf.inputs:
+        bsdf.inputs['Specular IOR Level'].default_value = 0.5
+    output = nodes.new(type='ShaderNodeOutputMaterial')
+    mat.node_tree.links.new(bsdf.outputs['BSDF'], output.inputs['Surface'])
+    return mat
+
+
+def _update_poly_curve(curve_data, points, radii=None, tilts=None, cyclic=False):
+    curve_data.splines.clear()
+    spline = curve_data.splines.new('POLY')
+    spline.points.add(len(points) - 1)
+    for index, point in enumerate(points):
+        spline.points[index].co = (point.x, point.y, point.z, 1.0)
+        if radii and index < len(radii):
+            spline.points[index].radius = max(0.000001, float(radii[index]))
+        if tilts and index < len(tilts):
+            spline.points[index].tilt = float(tilts[index])
+    spline.use_cyclic_u = cyclic
+    curve_data.update_tag()
+
+
+def _update_control_curve(curve_data, points, radii, tilts, cyclic, use_bspline, sharp_points):
+    curve_data.splines.clear()
+    if use_bspline:
+        spline = curve_data.splines.new('NURBS')
+        spline.points.add(len(points) - 1)
+        for index, point in enumerate(points):
+            spline.points[index].co = (point.x, point.y, point.z, 1.0)
+            spline.points[index].radius = max(0.000001, float(radii[index]))
+            spline.points[index].tilt = float(tilts[index])
+        spline.order_u = min(4, len(points))
+        spline.use_endpoint_u = not cyclic
+    else:
+        spline = curve_data.splines.new('BEZIER')
+        spline.bezier_points.add(len(points) - 1)
+        for index, point in enumerate(points):
+            bezier_point = spline.bezier_points[index]
+            bezier_point.co = point
+            bezier_point.radius = max(0.000001, float(radii[index]))
+            bezier_point.tilt = float(tilts[index])
+        for index, bezier_point in enumerate(spline.bezier_points):
+            handle_type = 'VECTOR' if index in sharp_points else 'AUTO'
+            bezier_point.handle_left_type = handle_type
+            bezier_point.handle_right_type = handle_type
+        handles = [
+            (point.handle_left.copy(), point.handle_right.copy())
+            for point in spline.bezier_points
+        ]
+        for bezier_point, (handle_left, handle_right) in zip(spline.bezier_points, handles):
+            bezier_point.handle_left_type = 'FREE'
+            bezier_point.handle_right_type = 'FREE'
+            bezier_point.handle_left = handle_left
+            bezier_point.handle_right = handle_right
+    spline.use_cyclic_u = cyclic
+    curve_data.update_tag()
+
+
+def _add_preview_rounded_caps(points, radii, tilts, start_cap_type, end_cap_type, cap_segments=4):
+    if len(points) < 2:
+        return list(points), list(radii), list(tilts), 0
+
+    output_points = list(points)
+    output_radii = list(radii)
+    output_tilts = list(tilts)
+    added_count = 0
+
+    if start_cap_type == 1:
+        outward = points[0] - points[1]
+        if outward.length > 1e-8:
+            outward.normalize()
+            cap_points = []
+            cap_radii = []
+            for index in range(cap_segments, 0, -1):
+                angle = 0.5 * math.pi * index / cap_segments
+                cap_points.append(points[0] + outward * (math.sin(angle) * radii[0]))
+                cap_radii.append(max(0.000001, math.cos(angle) * radii[0]))
+            output_points = cap_points + output_points
+            output_radii = cap_radii + output_radii
+            output_tilts = [tilts[0]] * cap_segments + output_tilts
+            added_count += cap_segments
+
+    if end_cap_type == 1:
+        outward = points[-1] - points[-2]
+        if outward.length > 1e-8:
+            outward.normalize()
+            for index in range(1, cap_segments + 1):
+                angle = 0.5 * math.pi * index / cap_segments
+                output_points.append(points[-1] + outward * (math.sin(angle) * radii[-1]))
+                output_radii.append(max(0.000001, math.cos(angle) * radii[-1]))
+                output_tilts.append(tilts[-1])
+            added_count += cap_segments
+
+    return output_points, output_radii, output_tilts, added_count
+
+
+def _preview_profile_points(resolution):
+    return generate_profile_vertices(
+        getattr(state, 'profile_global_type', state.PROFILE_CIRCULAR),
+        Vector((0.0, 0.0, 0.0)),
+        1.0,
+        Vector((1.0, 0.0, 0.0)),
+        Vector((0.0, 1.0, 0.0)),
+        resolution,
+        aspect_ratio=getattr(state, 'profile_aspect_ratio', 1.0),
+        twist_angle=0.0,
+        roundness=getattr(state, 'profile_roundness', 0.3),
+    )
+
+
+def _create_geometry_nodes_preview(context):
+    centerline_data = bpy.data.curves.new("Flex_Preview_Centerline", 'CURVE')
+    centerline_data.dimensions = '3D'
+    centerline_data.resolution_u = 32
+    preview_obj = bpy.data.objects.new("Flex_Preview", centerline_data)
+    context.collection.objects.link(preview_obj)
+
+    profile_data = bpy.data.curves.new("Flex_Preview_Profile", 'CURVE')
+    profile_data.dimensions = '2D'
+    profile_data.resolution_u = 1
+    profile_obj = bpy.data.objects.new("Flex_Preview_Profile", profile_data)
+    context.collection.objects.link(profile_obj)
+    profile_obj.hide_render = True
+    profile_obj.hide_set(True)
+
+    node_group = bpy.data.node_groups.new("Flex_Preview_Geometry", 'GeometryNodeTree')
+    node_group.is_modifier = True
+    node_group.interface.new_socket(name="Geometry", in_out='INPUT', socket_type='NodeSocketGeometry')
+    node_group.interface.new_socket(name="Geometry", in_out='OUTPUT', socket_type='NodeSocketGeometry')
+
+    nodes = node_group.nodes
+    links = node_group.links
+    group_input = nodes.new('NodeGroupInput')
+    group_output = nodes.new('NodeGroupOutput')
+    object_info = nodes.new('GeometryNodeObjectInfo')
+    object_info.inputs['Object'].default_value = profile_obj
+    resample_curve = nodes.new('GeometryNodeResampleCurve')
+    resample_curve.name = "Flex Resample Curve"
+    projection_resample = nodes.new('GeometryNodeResampleCurve')
+    projection_resample.name = "Flex Projection Resample"
+    resample_switch = nodes.new('GeometryNodeSwitch')
+    resample_switch.name = "Flex Resample Switch"
+    resample_switch.input_type = 'GEOMETRY'
+    spline_parameter = nodes.new('GeometryNodeSplineParameter')
+    store_factor = nodes.new('GeometryNodeStoreNamedAttribute')
+    store_factor.data_type = 'FLOAT'
+    store_factor.domain = 'POINT'
+    store_factor.inputs['Name'].default_value = "_flex_curve_factor"
+    subdivide_curve = nodes.new('GeometryNodeSubdivideCurve')
+    curve_factor = nodes.new('GeometryNodeInputNamedAttribute')
+    curve_factor.data_type = 'FLOAT'
+    curve_factor.inputs['Name'].default_value = "_flex_curve_factor"
+    sample_curve = nodes.new('GeometryNodeSampleCurve')
+    sample_curve.data_type = 'FLOAT'
+    sample_curve.mode = 'FACTOR'
+    set_position = nodes.new('GeometryNodeSetPosition')
+    curve_switch = nodes.new('GeometryNodeSwitch')
+    curve_switch.name = "Flex Adaptive Switch"
+    curve_switch.input_type = 'GEOMETRY'
+    domain_size = nodes.new('GeometryNodeAttributeDomainSize')
+    domain_size.component = 'CURVE'
+    index = nodes.new('GeometryNodeInputIndex')
+    next_index = nodes.new('FunctionNodeIntegerMath')
+    next_index.operation = 'ADD'
+    next_index.inputs[1].default_value = 1
+    wrap_index = nodes.new('FunctionNodeIntegerMath')
+    wrap_index.operation = 'MODULO'
+    tangent = nodes.new('GeometryNodeInputTangent')
+    next_tangent = nodes.new('GeometryNodeFieldAtIndex')
+    next_tangent.data_type = 'FLOAT_VECTOR'
+    next_tangent.domain = 'POINT'
+    tangent_dot = nodes.new('ShaderNodeVectorMath')
+    tangent_dot.operation = 'DOT_PRODUCT'
+    curvature_to_cuts = nodes.new('ShaderNodeMapRange')
+    curvature_to_cuts.clamp = True
+    curvature_to_cuts.inputs['From Min'].default_value = math.cos(math.radians(20.0))
+    curvature_to_cuts.inputs['From Max'].default_value = math.cos(math.radians(1.0))
+    curvature_to_cuts.inputs['To Min'].default_value = 5.0
+    curvature_to_cuts.inputs['To Max'].default_value = 0.0
+    cuts_to_integer = nodes.new('FunctionNodeFloatToInt')
+    cuts_to_integer.rounding_mode = 'ROUND'
+    last_index = nodes.new('FunctionNodeIntegerMath')
+    last_index.operation = 'SUBTRACT'
+    last_index.inputs[1].default_value = 1
+    is_last_point = nodes.new('FunctionNodeCompare')
+    is_last_point.data_type = 'INT'
+    is_last_point.operation = 'EQUAL'
+    seam_cut_switch = nodes.new('GeometryNodeSwitch')
+    seam_cut_switch.input_type = 'INT'
+    seam_cut_switch.inputs['True'].default_value = 0
+    closed_domain_size = nodes.new('GeometryNodeAttributeDomainSize')
+    closed_domain_size.component = 'CURVE'
+    closed_last_index = nodes.new('FunctionNodeIntegerMath')
+    closed_last_index.operation = 'SUBTRACT'
+    closed_last_index.inputs[1].default_value = 1
+    is_closed_last_point = nodes.new('FunctionNodeCompare')
+    is_closed_last_point.data_type = 'INT'
+    is_closed_last_point.operation = 'EQUAL'
+    delete_duplicate_endpoint = nodes.new('GeometryNodeDeleteGeometry')
+    delete_duplicate_endpoint.domain = 'POINT'
+    set_spline_cyclic = nodes.new('GeometryNodeSetSplineCyclic')
+    set_spline_cyclic.inputs['Selection'].default_value = True
+    set_spline_cyclic.inputs['Cyclic'].default_value = True
+    closed_curve_switch = nodes.new('GeometryNodeSwitch')
+    closed_curve_switch.name = "Flex Closed Curve Switch"
+    closed_curve_switch.input_type = 'GEOMETRY'
+    curve_radius = nodes.new('GeometryNodeInputRadius')
+    next_radius = nodes.new('GeometryNodeFieldAtIndex')
+    next_radius.data_type = 'FLOAT'
+    next_radius.domain = 'POINT'
+    radius_difference = nodes.new('ShaderNodeMath')
+    radius_difference.operation = 'SUBTRACT'
+    absolute_radius_difference = nodes.new('ShaderNodeMath')
+    absolute_radius_difference.operation = 'ABSOLUTE'
+    maximum_radius = nodes.new('ShaderNodeMath')
+    maximum_radius.operation = 'MAXIMUM'
+    safe_radius = nodes.new('ShaderNodeMath')
+    safe_radius.operation = 'MAXIMUM'
+    safe_radius.inputs[1].default_value = 0.000001
+    relative_radius_change = nodes.new('ShaderNodeMath')
+    relative_radius_change.operation = 'DIVIDE'
+    radius_change_to_cuts = nodes.new('ShaderNodeMapRange')
+    radius_change_to_cuts.clamp = True
+    radius_change_to_cuts.inputs['From Min'].default_value = 0.05
+    radius_change_to_cuts.inputs['From Max'].default_value = 0.35
+    radius_change_to_cuts.inputs['To Min'].default_value = 0.0
+    radius_change_to_cuts.inputs['To Max'].default_value = 5.0
+    maximum_cuts = nodes.new('ShaderNodeMath')
+    maximum_cuts.operation = 'MAXIMUM'
+    set_curve_radius = nodes.new('GeometryNodeSetCurveRadius')
+    curve_to_mesh = nodes.new('GeometryNodeCurveToMesh')
+    curve_to_mesh.name = "Flex Curve to Mesh"
+    set_material = nodes.new('GeometryNodeSetMaterial')
+    set_material.inputs['Material'].default_value = _get_preview_material()
+
+    links.new(group_input.outputs['Geometry'], resample_curve.inputs['Curve'])
+    links.new(group_input.outputs['Geometry'], projection_resample.inputs['Curve'])
+    links.new(group_input.outputs['Geometry'], resample_switch.inputs['False'])
+    links.new(resample_curve.outputs['Curve'], resample_switch.inputs['True'])
+    links.new(resample_switch.outputs['Output'], store_factor.inputs['Geometry'])
+    links.new(spline_parameter.outputs['Factor'], store_factor.inputs['Value'])
+    links.new(store_factor.outputs['Geometry'], subdivide_curve.inputs['Curve'])
+    links.new(store_factor.outputs['Geometry'], curve_switch.inputs['False'])
+    links.new(subdivide_curve.outputs['Curve'], set_position.inputs['Geometry'])
+    links.new(projection_resample.outputs['Curve'], sample_curve.inputs['Curves'])
+    links.new(curve_radius.outputs['Radius'], sample_curve.inputs['Value'])
+    links.new(curve_factor.outputs['Attribute'], sample_curve.inputs['Factor'])
+    links.new(sample_curve.outputs['Position'], set_position.inputs['Position'])
+    links.new(set_position.outputs['Geometry'], set_curve_radius.inputs['Curve'])
+    links.new(sample_curve.outputs['Value'], set_curve_radius.inputs['Radius'])
+    links.new(set_curve_radius.outputs['Curve'], curve_switch.inputs['True'])
+    links.new(store_factor.outputs['Geometry'], domain_size.inputs['Geometry'])
+    links.new(index.outputs['Index'], next_index.inputs[0])
+    links.new(next_index.outputs['Value'], wrap_index.inputs[0])
+    links.new(domain_size.outputs['Point Count'], wrap_index.inputs[1])
+    links.new(tangent.outputs['Tangent'], next_tangent.inputs['Value'])
+    links.new(wrap_index.outputs['Value'], next_tangent.inputs['Index'])
+    links.new(tangent.outputs['Tangent'], tangent_dot.inputs[0])
+    links.new(next_tangent.outputs['Value'], tangent_dot.inputs[1])
+    links.new(tangent_dot.outputs['Value'], curvature_to_cuts.inputs['Value'])
+    links.new(curve_radius.outputs['Radius'], next_radius.inputs['Value'])
+    links.new(wrap_index.outputs['Value'], next_radius.inputs['Index'])
+    links.new(curve_radius.outputs['Radius'], radius_difference.inputs[0])
+    links.new(next_radius.outputs['Value'], radius_difference.inputs[1])
+    links.new(radius_difference.outputs['Value'], absolute_radius_difference.inputs[0])
+    links.new(curve_radius.outputs['Radius'], maximum_radius.inputs[0])
+    links.new(next_radius.outputs['Value'], maximum_radius.inputs[1])
+    links.new(maximum_radius.outputs['Value'], safe_radius.inputs[0])
+    links.new(absolute_radius_difference.outputs['Value'], relative_radius_change.inputs[0])
+    links.new(safe_radius.outputs['Value'], relative_radius_change.inputs[1])
+    links.new(relative_radius_change.outputs['Value'], radius_change_to_cuts.inputs['Value'])
+    links.new(curvature_to_cuts.outputs['Result'], maximum_cuts.inputs[0])
+    links.new(radius_change_to_cuts.outputs['Result'], maximum_cuts.inputs[1])
+    links.new(maximum_cuts.outputs['Value'], cuts_to_integer.inputs['Float'])
+    links.new(domain_size.outputs['Point Count'], last_index.inputs[0])
+    links.new(index.outputs['Index'], is_last_point.inputs['A'])
+    links.new(last_index.outputs['Value'], is_last_point.inputs['B'])
+    links.new(is_last_point.outputs['Result'], seam_cut_switch.inputs['Switch'])
+    links.new(cuts_to_integer.outputs['Integer'], seam_cut_switch.inputs['False'])
+    links.new(seam_cut_switch.outputs['Output'], subdivide_curve.inputs['Cuts'])
+    links.new(curve_switch.outputs['Output'], closed_domain_size.inputs['Geometry'])
+    links.new(closed_domain_size.outputs['Point Count'], closed_last_index.inputs[0])
+    links.new(index.outputs['Index'], is_closed_last_point.inputs['A'])
+    links.new(closed_last_index.outputs['Value'], is_closed_last_point.inputs['B'])
+    links.new(curve_switch.outputs['Output'], delete_duplicate_endpoint.inputs['Geometry'])
+    links.new(is_closed_last_point.outputs['Result'], delete_duplicate_endpoint.inputs['Selection'])
+    links.new(delete_duplicate_endpoint.outputs['Geometry'], set_spline_cyclic.inputs['Curve'])
+    links.new(curve_switch.outputs['Output'], closed_curve_switch.inputs['False'])
+    links.new(set_spline_cyclic.outputs['Curve'], closed_curve_switch.inputs['True'])
+    links.new(closed_curve_switch.outputs['Output'], curve_to_mesh.inputs['Curve'])
+    links.new(object_info.outputs['Geometry'], curve_to_mesh.inputs['Profile Curve'])
+    links.new(curve_radius.outputs['Radius'], curve_to_mesh.inputs['Scale'])
+    links.new(curve_to_mesh.outputs['Mesh'], set_material.inputs['Geometry'])
+    links.new(set_material.outputs['Geometry'], group_output.inputs['Geometry'])
+
+    modifier = preview_obj.modifiers.new(name="Flex Preview Geometry", type='NODES')
+    modifier.node_group = node_group
+    preview_obj.display_type = 'SOLID'
+    preview_obj.show_wire = True
+    preview_obj.show_all_edges = True
+    preview_obj.show_in_front = False
+    preview_obj.select_set(True)
+    context.view_layer.objects.active = preview_obj
+
+    state.preview_mesh_obj = preview_obj
+    state.preview_profile_obj = profile_obj
+    state.preview_node_group = node_group
+    return preview_obj
+
+
+def _update_geometry_nodes_preview(context, curve_points_3d, radii_3d, resolution, segments):
+    start_cap_type = getattr(state, 'start_cap_type', 1)
+    end_cap_type = getattr(state, 'end_cap_type', 1)
+    is_closed_loop = start_cap_type == 3 or end_cap_type == 3
+    rounded_caps = not is_closed_loop and (start_cap_type == 1 or end_cap_type == 1)
+    adaptive_requested = (
+        getattr(state, 'adaptive_segmentation', False)
+        and len(curve_points_3d) >= 3
+    )
+    helix_active = _helix_is_active()
+    use_bspline = getattr(state, 'bspline_mode', False)
+    python_centerline = helix_active or not use_bspline or is_closed_loop or rounded_caps
+    global_twist = float(getattr(state, 'profile_global_twist', 0.0))
+
+    if python_centerline:
+        source_segments = int(segments)
+        if adaptive_requested:
+            source_segments = min(2048, max(256, source_segments * 4))
+        centerline_points = _compute_smooth_curve_points(
+            curve_points_3d,
+            radii_3d,
+            source_segments,
+            no_tangent_points=state.no_tangent_points,
+            tensions=state.point_tensions,
+            is_closed_loop=is_closed_loop,
+            use_bspline=getattr(state, 'bspline_mode', False),
+            adaptive=False,
+        )
+        centerline_radii = math_utils.calculate_smooth_radii(
+            curve_points_3d,
+            radii_3d,
+            centerline_points,
+            tensions=state.point_tensions,
+            sharp_points=state.no_tangent_points,
+            is_closed=is_closed_loop,
+        )
+        if len(centerline_radii) >= 2 and not is_closed_loop:
+            centerline_radii[0] = radii_3d[0]
+            centerline_radii[-1] = radii_3d[-1]
+        centerline_twists = math_utils.calculate_smooth_twists(
+            curve_points_3d,
+            getattr(state, 'profile_point_twists', []),
+            centerline_points,
+            is_closed=is_closed_loop,
+        )
+        centerline_points = _apply_helix_to_curve_points(
+            centerline_points,
+            original_control_points=curve_points_3d,
+        )
+    else:
+        centerline_points = curve_points_3d
+        centerline_radii = radii_3d
+        point_twists = list(getattr(state, 'profile_point_twists', []))
+        point_twists.extend([0.0] * max(0, len(curve_points_3d) - len(point_twists)))
+        centerline_twists = point_twists[:len(curve_points_3d)]
+
+    centerline_twists = [global_twist + twist for twist in centerline_twists]
+    deformed_adaptive_baked = adaptive_requested and (rounded_caps or helix_active)
+    if deformed_adaptive_baked:
+        adaptive_source_points = centerline_points
+        centerline_points, centerline_radii = _adaptive_resample_deformed_curve(
+            adaptive_source_points,
+            centerline_radii,
+            segments,
+            False,
+        )
+        _, centerline_twists = _adaptive_resample_deformed_curve(
+            adaptive_source_points,
+            centerline_twists,
+            segments,
+            False,
+        )
+
+    source_cyclic = is_closed_loop
+    rounded_cap_point_count = 0
+    if is_closed_loop and python_centerline and centerline_points:
+        centerline_points = list(centerline_points) + [centerline_points[0].copy()]
+        centerline_radii = list(centerline_radii) + [centerline_radii[0]]
+        centerline_twists = list(centerline_twists) + [centerline_twists[0]]
+        source_cyclic = False
+    elif rounded_caps:
+        centerline_points, centerline_radii, centerline_twists, rounded_cap_point_count = (
+            _add_preview_rounded_caps(
+                centerline_points,
+                centerline_radii,
+                centerline_twists,
+                start_cap_type,
+                end_cap_type,
+            )
+        )
+
+    preview_obj = state.preview_mesh_obj
+    if (
+        preview_obj is None
+        or preview_obj.name not in bpy.data.objects
+        or preview_obj.type != 'CURVE'
+        or not preview_obj.get("flex_gn_preview", False)
+    ):
+        state.cleanup_preview_mesh()
+        preview_obj = _create_geometry_nodes_preview(context)
+        preview_obj["flex_gn_preview"] = True
+
+    if python_centerline:
+        _update_poly_curve(
+            preview_obj.data,
+            centerline_points,
+            radii=centerline_radii,
+            tilts=centerline_twists,
+            cyclic=source_cyclic,
+        )
+    else:
+        _update_control_curve(
+            preview_obj.data,
+            centerline_points,
+            centerline_radii,
+            centerline_twists,
+            source_cyclic,
+            getattr(state, 'bspline_mode', False),
+            state.no_tangent_points,
+        )
+    _update_poly_curve(
+        state.preview_profile_obj.data,
+        _preview_profile_points(resolution),
+        cyclic=True,
+    )
+
+    adaptive_active = adaptive_requested and not deformed_adaptive_baked
+    resample_curve = state.preview_node_group.nodes.get("Flex Resample Curve")
+    if resample_curve is not None:
+        sample_count = int(segments) + 1 + rounded_cap_point_count
+        if python_centerline and not adaptive_active:
+            sample_count = len(centerline_points)
+        resample_curve.inputs['Count'].default_value = max(2, sample_count)
+
+    projection_resample = state.preview_node_group.nodes.get("Flex Projection Resample")
+    if projection_resample is not None:
+        projection_resample.inputs['Count'].default_value = max(64, int(segments) * 8 + 1)
+
+    resample_switch = state.preview_node_group.nodes.get("Flex Resample Switch")
+    if resample_switch is not None:
+        resample_switch.inputs['Switch'].default_value = not python_centerline or adaptive_active
+
+    adaptive_switch = state.preview_node_group.nodes.get("Flex Adaptive Switch")
+    if adaptive_switch is not None:
+        adaptive_switch.inputs['Switch'].default_value = adaptive_active
+
+    closed_curve_switch = state.preview_node_group.nodes.get("Flex Closed Curve Switch")
+    if closed_curve_switch is not None:
+        closed_curve_switch.inputs['Switch'].default_value = is_closed_loop
+
+    curve_to_mesh = state.preview_node_group.nodes.get("Flex Curve to Mesh")
+    if curve_to_mesh is not None:
+        curve_to_mesh.inputs['Fill Caps'].default_value = (
+            not is_closed_loop
+            and getattr(state, 'start_cap_type', 1) > 0
+            and getattr(state, 'end_cap_type', 1) > 0
+        )
+
+    if state.object_matrix_world is not None:
+        preview_obj.matrix_world = state.object_matrix_world
+    if getattr(state, 'mirror_mode_active', False):
+        apply_mirror_modifier(preview_obj, True)
+    return preview_obj
+
+
+def _update_preview_mesh_python(context, curve_points_3d, radii_3d, resolution=16, segments=32):
     """Create or update the preview mesh based on the current curve."""
     if len(curve_points_3d) < 2 or len(radii_3d) < 2:
         return
-    
+    if state.preview_mesh_obj is not None and state.preview_mesh_obj.type != 'MESH':
+        state.cleanup_preview_mesh()
+
     if state.preview_mesh_obj is None or state.preview_mesh_obj.name not in bpy.data.objects:
         state.preview_mesh_obj = create_flex_mesh_from_curve(
             context,
@@ -1463,6 +2109,41 @@ def update_preview_mesh(context, curve_points_3d, radii_3d, resolution=16, segme
             if fill_boundaries:
                 fill_boundary_loops(mesh, fill_boundaries)
         mesh.update()
+
+    return state.preview_mesh_obj
+
+
+def update_preview_mesh(context, curve_points_3d, radii_3d, resolution=16, segments=32):
+    """Update the modal preview through Geometry Nodes with a Python fallback."""
+    if len(curve_points_3d) < 2 or len(radii_3d) < 2:
+        return
+    if getattr(state, 'preview_geometry_nodes_failed', False):
+        return _update_preview_mesh_python(
+            context,
+            curve_points_3d,
+            radii_3d,
+            resolution,
+            segments,
+        )
+    try:
+        return _update_geometry_nodes_preview(
+            context,
+            curve_points_3d,
+            radii_3d,
+            resolution,
+            segments,
+        )
+    except Exception as exc:
+        print(f"Flex: Geometry Nodes preview unavailable, using Python preview: {exc}")
+        state.preview_geometry_nodes_failed = True
+        state.cleanup_preview_mesh()
+        return _update_preview_mesh_python(
+            context,
+            curve_points_3d,
+            radii_3d,
+            resolution,
+            segments,
+        )
 
 
 def register():

@@ -907,70 +907,100 @@ def find_tension_control_hover(context, mouse_pos, points_3d, radii_3d, tensions
     return closest_index
 
 
-def find_closest_point_on_curve(context, mouse_pos, curve_points_3d, threshold=15):
-    """Find the closest point on the curve to the mouse position."""
-    if len(curve_points_3d) < 2:
-        return False, None, -1
-    
-    tensions = getattr(state, 'point_tensions', None)
-    sharp_points = getattr(state, 'no_tangent_points', set())
-    dense_count = max(400, len(curve_points_3d) * 40)
+def get_cached_curve_screen_samples(context, curve_points_3d, sample_count=400):
+    """Return shared curve samples and projections for the current view."""
     is_closed_loop = (
         int(getattr(state, 'start_cap_type', 1)) == 3
         or int(getattr(state, 'end_cap_type', 1)) == 3
     )
-    
+    region_data = getattr(context, 'region_data', None)
+    region = getattr(context, 'region', None)
+    view_matrix = tuple(value for row in region_data.view_matrix for value in row) if region_data else ()
+    object_matrix = getattr(state, 'object_matrix_world', None)
+    object_matrix_key = tuple(value for row in object_matrix for value in row) if object_matrix else ()
+    cache_key = (
+        tuple(tuple(point) for point in curve_points_3d),
+        tuple(getattr(state, 'point_tensions', [])),
+        tuple(sorted(getattr(state, 'no_tangent_points', set()))),
+        bool(getattr(state, 'bspline_mode', False)),
+        is_closed_loop,
+        int(sample_count),
+        view_matrix,
+        object_matrix_key,
+        getattr(region, 'width', 0),
+        getattr(region, 'height', 0),
+    )
+    if cache_key == getattr(state, 'curve_screen_cache_key', None):
+        return state.curve_screen_cache_3d, state.curve_screen_cache_2d
+
     if getattr(state, 'bspline_mode', False):
         dense_curve = bspline_cubic_open_uniform(
             curve_points_3d,
-            dense_count,
+            sample_count,
             is_closed=is_closed_loop,
         )
     else:
         dense_curve = interpolate_curve_3d(
             curve_points_3d,
-            num_points=dense_count,
-            sharp_points=sharp_points,
-            tensions=tensions,
+            num_points=sample_count,
+            sharp_points=getattr(state, 'no_tangent_points', set()),
+            tensions=getattr(state, 'point_tensions', None),
             is_closed=is_closed_loop,
         )
+
+    valid_3d = []
+    valid_2d = []
+    for point in dense_curve:
+        projected = conversion.get_2d_from_3d(context, point)
+        if projected is not None:
+            valid_3d.append(point)
+            valid_2d.append(projected)
+
+    state.curve_screen_cache_key = cache_key
+    state.curve_screen_cache_3d = valid_3d
+    state.curve_screen_cache_2d = valid_2d
+    return valid_3d, valid_2d
+
+
+def find_closest_point_on_curve(context, mouse_pos, curve_points_3d, threshold=15):
+    """Find the closest point on the curve to the mouse position."""
+    if len(curve_points_3d) < 2:
+        return False, None, -1
     
-    dense_curve_2d = []
-    dense_curve_valid = []
-    for p in dense_curve:
-        p2d = conversion.get_2d_from_3d(context, p)
-        if p2d is not None:
-            dense_curve_2d.append(p2d)
-            dense_curve_valid.append(p)
+    dense_count = max(400, len(curve_points_3d) * 40)
+    is_closed_loop = (
+        int(getattr(state, 'start_cap_type', 1)) == 3
+        or int(getattr(state, 'end_cap_type', 1)) == 3
+    )
+    dense_curve_valid, dense_curve_2d = get_cached_curve_screen_samples(
+        context,
+        curve_points_3d,
+        dense_count,
+    )
     
     if len(dense_curve_2d) < 2:
-        smooth_curve = dense_curve_valid
+        smooth_curve = list(zip(dense_curve_valid, dense_curve_2d))
     else:
-        smooth_curve = [dense_curve_valid[0]]
+        smooth_curve = [(dense_curve_valid[0], dense_curve_2d[0])]
         accum = 0.0
         last = dense_curve_2d[0]
         for i in range(1, len(dense_curve_2d)):
             seg = math.sqrt((dense_curve_2d[i][0]-last[0])**2 + (dense_curve_2d[i][1]-last[1])**2)
             accum += seg
             if accum >= 0.75:
-                smooth_curve.append(dense_curve_valid[i])
+                smooth_curve.append((dense_curve_valid[i], dense_curve_2d[i]))
                 accum = 0.0
                 last = dense_curve_2d[i]
-        if smooth_curve[-1] is not dense_curve_valid[-1]:
-            smooth_curve.append(dense_curve_valid[-1])
+        if smooth_curve[-1][0] is not dense_curve_valid[-1]:
+            smooth_curve.append((dense_curve_valid[-1], dense_curve_2d[-1]))
     
     min_dist = float('inf')
     closest_point_3d = None
-    closest_smooth_index = -1
-    for i, point_3d in enumerate(smooth_curve):
-        point_2d = conversion.get_2d_from_3d(context, point_3d)
-        if point_2d is None:
-            continue
+    for point_3d, point_2d in smooth_curve:
         dist = math.sqrt((mouse_pos[0] - point_2d[0]) ** 2 + (mouse_pos[1] - point_2d[1]) ** 2)
         if dist < min_dist:
             min_dist = dist
             closest_point_3d = point_3d
-            closest_smooth_index = i
     
     if min_dist > threshold or closest_point_3d is None:
         return False, None, -1

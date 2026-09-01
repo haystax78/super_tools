@@ -31,7 +31,10 @@ class MESH_OT_flex_create(FlexOperatorBase):
     
     def draw_callback_px(self, context, _unused=None):
         """Draw the curve points and lines in the viewport"""
-        flex_drawing.draw_callback_px(self, context)
+        draw_context = bpy.context
+        if getattr(draw_context, 'region_data', None) is None:
+            draw_context = context
+        flex_drawing.draw_callback_px(self, draw_context)
 
     def _get_flex_prefs(self):
         """Return addon preferences for flex settings when available."""
@@ -280,6 +283,10 @@ class MESH_OT_flex_create(FlexOperatorBase):
                 state.helix_magnitude = curve_data.get('helix_magnitude', 0.0)
                 state.helix_frequency = curve_data.get('helix_frequency', 0.0)
                 state.helix_slant = curve_data.get('helix_slant', 0.0)
+                state.helix_endpoint_mode = curve_data.get(
+                    'helix_endpoint_mode',
+                    state.HELIX_ENDPOINT_SMOOTH_TAPER,
+                )
                 state.helix_point_magnitudes = curve_data.get(
                     'helix_point_magnitudes',
                     [],
@@ -737,6 +744,7 @@ class MESH_OT_flex_create(FlexOperatorBase):
                 "helix_magnitude": state.helix_magnitude,
                 "helix_frequency": state.helix_frequency,
                 "helix_slant": state.helix_slant,
+                "helix_endpoint_mode": state.helix_endpoint_mode,
                 "helix_point_magnitudes": list(state.helix_point_magnitudes),
                 "helix_point_frequencies": list(state.helix_point_frequencies),
                 "helix_point_slants": list(state.helix_point_slants),

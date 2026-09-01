@@ -260,6 +260,14 @@ class CursorHUD:
                 'color': (0.9, 0.7, 1.0)
             })
 
+        endpoint_mode = int(getattr(state, 'helix_endpoint_mode', 0))
+        endpoint_mode %= len(state.HELIX_ENDPOINT_MODE_NAMES)
+        slots.append({
+            'id': 'helix_ends',
+            'text': f"Helix Ends [Shift+{helix_key}] - {state.HELIX_ENDPOINT_MODE_NAMES[endpoint_mode]}",
+            'color': (0.75, 0.55, 1.0)
+        })
+
         snapping_mode = getattr(state, 'snapping_mode', 0)
         snapping_key = getattr(state, 'KEY_SNAPPING_MODE', 'S')
         if snapping_mode == getattr(state, 'SNAPPING_FACE', 1):
@@ -967,26 +975,15 @@ def draw_callback_px(operator, context):
                 int(getattr(state, 'start_cap_type', 1)) == 3
                 or int(getattr(state, 'end_cap_type', 1)) == 3
             )
-            if getattr(state, 'bspline_mode', False):
-                smooth_curve_points_3d = math_utils.bspline_cubic_open_uniform(
-                    state.points_3d,
-                    300,
-                    is_closed=is_closed_loop,
-                )
-            else:
-                smooth_curve_points_3d = math_utils.interpolate_curve_3d(
-                    state.points_3d, 
-                    num_points=300,
-                    sharp_points=state.no_tangent_points,
-                    tensions=state.point_tensions,
-                    is_closed=is_closed_loop,
-                )
-            
-            curve_points_2d = []
-            for point_3d in smooth_curve_points_3d:
-                point_2d = conversion.get_2d_from_3d(context, point_3d)
-                if point_2d is not None:
-                    curve_points_2d.append((point_2d[0], point_2d[1], 0))
+            _, cached_curve_points_2d = math_utils.get_cached_curve_screen_samples(
+                context,
+                state.points_3d,
+                max(400, len(state.points_3d) * 40),
+            )
+            curve_points_2d = [
+                (point[0], point[1], 0)
+                for point in cached_curve_points_2d
+            ]
             if is_closed_loop and len(curve_points_2d) > 1:
                 first_point = curve_points_2d[0]
                 last_point = curve_points_2d[-1]

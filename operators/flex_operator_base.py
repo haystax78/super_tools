@@ -92,6 +92,9 @@ class FlexOperatorBase(bpy.types.Operator):
                         state.face_drag_depth_t = None
             
             self._camera_matrix = current_matrix
+            state.curve_screen_cache_key = None
+            if context.area is not None:
+                context.area.tag_redraw()
             return True
         elif not hasattr(self, '_camera_matrix'):
             self._camera_matrix = current_matrix

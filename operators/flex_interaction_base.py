@@ -807,15 +807,7 @@ def modal_handler(operator, context, event):
                     mesh_utils.update_preview_mesh(context, state.points_3d, state.point_radii_3d, 
                                                   resolution=operator.resolution, segments=operator.segments)
                 else:
-                    if state.preview_mesh_obj is not None:
-                        try:
-                            if state.preview_mesh_obj.name in bpy.data.objects:
-                                for collection in state.preview_mesh_obj.users_collection:
-                                    collection.objects.unlink(state.preview_mesh_obj)
-                                bpy.data.objects.remove(state.preview_mesh_obj)
-                        except Exception as e:
-                            print(f"Failed to remove preview mesh: {e}")
-                        state.preview_mesh_obj = None
+                    state.cleanup_preview_mesh()
                 operator.report({'INFO'}, "Redo")
             else:
                 operator.report({'INFO'}, "Nothing to redo")
@@ -826,15 +818,7 @@ def modal_handler(operator, context, event):
                     mesh_utils.update_preview_mesh(context, state.points_3d, state.point_radii_3d, 
                                                   resolution=operator.resolution, segments=operator.segments)
                 else:
-                    if state.preview_mesh_obj is not None:
-                        try:
-                            if state.preview_mesh_obj.name in bpy.data.objects:
-                                for collection in state.preview_mesh_obj.users_collection:
-                                    collection.objects.unlink(state.preview_mesh_obj)
-                                bpy.data.objects.remove(state.preview_mesh_obj)
-                        except Exception as e:
-                            print(f"Failed to remove preview mesh: {e}")
-                        state.preview_mesh_obj = None
+                    state.cleanup_preview_mesh()
                 operator.report({'INFO'}, "Undo")
             else:
                 operator.report({'INFO'}, "Nothing to undo")
@@ -1078,8 +1062,32 @@ def modal_handler(operator, context, event):
     if (
         event.type == state.KEY_HELIX
         and event.value == 'PRESS'
+        and event.shift
+        and not (event.alt or event.ctrl or event.oskey)
+    ):
+        mode_count = len(state.HELIX_ENDPOINT_MODE_NAMES)
+        state.helix_endpoint_mode = (state.helix_endpoint_mode + 1) % mode_count
+        state.helix_endpoint_cycle_pending = True
+        state.save_history_state()
+        if len(state.points_3d) >= 2 and len(state.point_radii_3d) >= 2:
+            mesh_utils.update_preview_mesh(
+                context,
+                state.points_3d,
+                state.point_radii_3d,
+                resolution=operator.resolution,
+                segments=operator.segments,
+            )
+        mode_name = state.HELIX_ENDPOINT_MODE_NAMES[state.helix_endpoint_mode]
+        operator.report({'INFO'}, f"Helix Ends: {mode_name}")
+        context.area.tag_redraw()
+        return {'RUNNING_MODAL'}
+
+    if (
+        event.type == state.KEY_HELIX
+        and event.value == 'PRESS'
         and not getattr(state, 'profile_helix_mode', False)
     ):
+        state.helix_endpoint_cycle_pending = False
         state.profile_helix_mode = True
         state.ensure_helix_point_arrays()
         helix_point_index = -1
@@ -1115,6 +1123,13 @@ def modal_handler(operator, context, event):
         else:
             operator.report({'INFO'}, "Helix Mode: ON (Global)")
         context.area.tag_redraw()
+        return {'RUNNING_MODAL'}
+    if (
+        event.type == state.KEY_HELIX
+        and event.value == 'RELEASE'
+        and getattr(state, 'helix_endpoint_cycle_pending', False)
+    ):
+        state.helix_endpoint_cycle_pending = False
         return {'RUNNING_MODAL'}
     if event.type == state.KEY_HELIX and event.value == 'RELEASE':
         state.profile_helix_mode = False

@@ -23,6 +23,10 @@ class FlexState:
     PROFILE_SQUARE_ROUNDED = 1
     PROFILE_SQUARE = 2
     PROFILE_CUSTOM = 3
+    HELIX_ENDPOINT_SMOOTH_TAPER = 0
+    HELIX_ENDPOINT_CABLE_RETURN = 1
+    HELIX_ENDPOINT_UNMODIFIED = 2
+    HELIX_ENDPOINT_MODE_NAMES = ("Smooth Taper", "Cable Return", "Unmodified")
     
     # Configuration constants
     DEFAULT_RADIUS = 0.5
@@ -152,6 +156,12 @@ class FlexState:
         
         # Mesh preview
         self.preview_mesh_obj = None
+        self.preview_profile_obj = None
+        self.preview_node_group = None
+        self.preview_geometry_nodes_failed = False
+        self.curve_screen_cache_key = None
+        self.curve_screen_cache_3d = []
+        self.curve_screen_cache_2d = []
         
         # Configuration
         self.current_depth = 10.0
@@ -214,6 +224,8 @@ class FlexState:
         self.helix_magnitude = 0.0
         self.helix_frequency = 0.0
         self.helix_slant = 0.0
+        self.helix_endpoint_mode = self.HELIX_ENDPOINT_SMOOTH_TAPER
+        self.helix_endpoint_cycle_pending = False
         self.helix_point_magnitudes = []
         self.helix_point_frequencies = []
         self.helix_point_slants = []
@@ -332,24 +344,40 @@ class FlexState:
     
     def cleanup_preview_mesh(self):
         """Remove the preview mesh object and its data."""
-        if self.preview_mesh_obj is not None:
+        for attr_name in ('preview_mesh_obj', 'preview_profile_obj'):
+            obj = getattr(self, attr_name, None)
+            if obj is None:
+                continue
             try:
-                if self.preview_mesh_obj.name in bpy.data.objects:
-                    mesh_data = self.preview_mesh_obj.data
+                if obj.name in bpy.data.objects:
+                    object_data = obj.data
                     # Clear material slots before deletion to avoid stale references
-                    if self.preview_mesh_obj.data.materials:
-                        self.preview_mesh_obj.data.materials.clear()
-                    for collection in self.preview_mesh_obj.users_collection:
-                        collection.objects.unlink(self.preview_mesh_obj)
-                    bpy.data.objects.remove(self.preview_mesh_obj)
-                    if mesh_data and mesh_data.name in bpy.data.meshes and mesh_data.users == 0:
-                        bpy.data.meshes.remove(mesh_data)
-                self.preview_mesh_obj = None
+                    if object_data and hasattr(object_data, 'materials'):
+                        object_data.materials.clear()
+                    for collection in list(obj.users_collection):
+                        collection.objects.unlink(obj)
+                    bpy.data.objects.remove(obj)
+                    if object_data and object_data.users == 0:
+                        if isinstance(object_data, bpy.types.Mesh):
+                            bpy.data.meshes.remove(object_data)
+                        elif isinstance(object_data, bpy.types.Curve):
+                            bpy.data.curves.remove(object_data)
             except ReferenceError:
-                self.preview_mesh_obj = None
+                pass
             except Exception as e:
-                print(f"Flex: Failed to remove preview mesh: {e}")
-                self.preview_mesh_obj = None
+                print(f"Flex: Failed to remove preview object: {e}")
+            setattr(self, attr_name, None)
+
+        node_group = getattr(self, 'preview_node_group', None)
+        if node_group is not None:
+            try:
+                if node_group.name in bpy.data.node_groups and node_group.users == 0:
+                    bpy.data.node_groups.remove(node_group)
+            except ReferenceError:
+                pass
+            except Exception as e:
+                print(f"Flex: Failed to remove preview node group: {e}")
+        self.preview_node_group = None
     
     def reset_for_new_curve(self):
         """Reset state for creating a new curve."""
@@ -379,6 +407,8 @@ class FlexState:
         self.helix_magnitude = 0.0
         self.helix_frequency = 0.0
         self.helix_slant = 0.0
+        self.helix_endpoint_mode = self.HELIX_ENDPOINT_SMOOTH_TAPER
+        self.helix_endpoint_cycle_pending = False
         self.helix_point_magnitudes = []
         self.helix_point_frequencies = []
         self.helix_point_slants = []
@@ -461,6 +491,7 @@ class UndoRedoManager:
             'helix_magnitude': self.state.helix_magnitude,
             'helix_frequency': self.state.helix_frequency,
             'helix_slant': self.state.helix_slant,
+            'helix_endpoint_mode': self.state.helix_endpoint_mode,
             'helix_point_magnitudes': self.state.helix_point_magnitudes.copy() if self.state.helix_point_magnitudes else [],
             'helix_point_frequencies': self.state.helix_point_frequencies.copy() if self.state.helix_point_frequencies else [],
             'helix_point_slants': self.state.helix_point_slants.copy() if self.state.helix_point_slants else [],
@@ -510,6 +541,10 @@ class UndoRedoManager:
         self.state.helix_magnitude = saved_state.get('helix_magnitude', 0.0)
         self.state.helix_frequency = saved_state.get('helix_frequency', 0.0)
         self.state.helix_slant = saved_state.get('helix_slant', 0.0)
+        self.state.helix_endpoint_mode = saved_state.get(
+            'helix_endpoint_mode',
+            FlexState.HELIX_ENDPOINT_SMOOTH_TAPER,
+        )
         self.state.helix_point_magnitudes = saved_state.get(
             'helix_point_magnitudes',
             [],

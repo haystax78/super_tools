@@ -2,6 +2,20 @@
 
 A Blender addon that provides advanced mesh editing tools for enhanced modeling workflows.
 
+## What's New in v1.4.0
+
+- **Geometry Nodes Preview Backend**: Flex Tool modal previews now use a hybrid Python/Geometry Nodes pipeline for substantially faster interactive mesh generation while retaining the Python finalizer for authoritative output.
+- **Adaptive Densification**:
+  - Curvature-aware adaptive preview geometry is generated in Geometry Nodes
+  - Helix curvature is analyzed after deformation so adaptive detail follows spiral turns in both previews and finalized meshes
+  - Rounded caps retain fixed hemisphere rings and closed loops generate genuinely cyclic preview topology
+- **Curve and Profile Fidelity**:
+  - Catmull-Rom previews use the same tension-aware interpolation as finalized meshes
+  - Radius, twist, custom profiles, rounded caps, mirror mode, and camera-driven overlays remain synchronized with the preview
+- **Helix Endpoint Modes**: Shift+O cycles Smooth Taper, Cable Return, and Unmodified endpoint handling; the selected mode persists when editing Flex meshes.
+- **Performance and Stability**: Shared curve-projection caching, camera invalidation, GN fallback handling, and complete temporary preview-data cleanup.
+- Blender 5.0 or later is now required.
+
 ## What's New in v1.3.0
 
 - **Flex Tool Custom Profile Editor**:
@@ -84,9 +98,29 @@ A Blender addon that provides advanced mesh editing tools for enhanced modeling 
 
 ## Requirements
 
-- Blender 4.5 or later
+- Blender 5.0 or later
 
 ## Changelog
+
+### v1.4.0
+- Geometry Nodes Preview Backend:
+  - Replaced repeated Python preview-mesh construction with a hybrid Python/Geometry Nodes modal-preview pipeline
+  - Retained Python finalization for authoritative mesh topology, caps, and UV output
+  - Added automatic fallback to the Python preview backend when GN initialization is unavailable
+- Adaptive Densification:
+  - Added curvature-aware GN subdivision and projection onto the interpolated source curve
+  - Added dense post-helix adaptive sampling to prevent aliasing across long control-point spans
+  - Applied post-helix adaptive density to finalized meshes for preview/final parity
+  - Preserved fixed rounded-cap rings and generated cyclic closed-loop preview topology
+- Curve and Profile Fidelity:
+  - Restored authoritative tension-aware Catmull-Rom interpolation in previews
+  - Preserved radius, twist, custom profiles, rounded caps, mirror mode, and asymmetric cap behavior
+  - Added shared screen-curve sampling/projection caching with camera-change invalidation
+- Helix Endpoint Modes:
+  - Added Shift+O cycling between Smooth Taper, Cable Return, and Unmodified
+  - Added softened phase easing for Cable Return transitions
+  - Persisted endpoint mode through undo/redo and Flex mesh metadata
+- Raised the minimum supported Blender version to 5.0.
 
 ### v1.3.0
 - Flex Tool Custom Profile Editor:

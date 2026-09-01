@@ -98,6 +98,8 @@ class VIEW3D_PT_flex_shortcuts(bpy.types.Panel):
         col.label(text="X: Toggle Mirror")
         col.label(text="S: Cycle Snapping")
         col.label(text="T (hold): Twist mode")
+        col.label(text="O (hold): Helix mode")
+        col.label(text="Shift+O: Cycle helix ends")
         col.label(text="G: Group move")
         col.label(text="R: Cycle roundness")
         col.label(text="Ctrl+Z: Undo")
