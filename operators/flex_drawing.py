@@ -216,14 +216,23 @@ class CursorHUD:
         twist_active = bool(getattr(state, 'profile_twist_mode', False))
         twist_key = getattr(state, 'KEY_TWIST', 'T')
         if twist_active:
+            profile_locked = bool(getattr(state, 'helix_profile_lock', False))
+            twist_label = f"Twist Mode [{twist_key}]"
+            if profile_locked:
+                rotation_deg = math.degrees(getattr(state, 'profile_global_twist', 0.0))
+                twist_label = f"Profile Rotation [{twist_key}] - {rotation_deg:.0f}°"
             slots.append({
                 'id': 'twist',
-                'text': f"Twist Mode [{twist_key}]",
+                'text': twist_label,
                 'color': (1.0, 0.8, 0.2)
             })
+            if profile_locked:
+                controls_text = 'LMB/RMB: Rotate Profile, Wheel: Step 15°, MMB: Reset'
+            else:
+                controls_text = 'LMB: Point/Ramp, RMB: Global, Wheel: Ramp, MMB: Reset'
             slots.append({
                 'id': 'twist_controls',
-                'text': 'LMB: Point/Ramp, RMB: Global, Wheel: Ramp, MMB: Reset',
+                'text': controls_text,
                 'color': (1.0, 0.7, 0.3)
             })
         else:
@@ -266,6 +275,12 @@ class CursorHUD:
             'id': 'helix_ends',
             'text': f"Helix Ends [Shift+{helix_key}] - {state.HELIX_ENDPOINT_MODE_NAMES[endpoint_mode]}",
             'color': (0.75, 0.55, 1.0)
+        })
+        profile_lock = "ON" if getattr(state, 'helix_profile_lock', False) else "OFF"
+        slots.append({
+            'id': 'helix_profile_lock',
+            'text': f"Helix Profile Lock [Alt+{helix_key}] - {profile_lock}",
+            'color': (0.7, 0.5, 1.0)
         })
 
         snapping_mode = getattr(state, 'snapping_mode', 0)

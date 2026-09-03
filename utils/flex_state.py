@@ -32,6 +32,7 @@ class FlexState:
     DEFAULT_RADIUS = 0.5
     MIN_RADIUS = 0.05
     MAX_RADIUS = 10.0
+    MIN_RADIUS_CONTROL_PIXELS = 40.0
     
     # Hotkey configuration (Blender event.type names) - defaults, overridden by addon prefs
     KEY_CANCEL = 'ESC'
@@ -131,6 +132,8 @@ class FlexState:
         self.active_point_index = -1
         self.hover_point_index = -1
         self.adjusting_radius_index = -1
+        self.radius_drag_start_screen_distance = None
+        self.radius_drag_start_value = None
         self.hover_radius_index = -1
         self.adjusting_tension_index = -1
         self.hover_tension_index = -1
@@ -226,6 +229,8 @@ class FlexState:
         self.helix_slant = 0.0
         self.helix_endpoint_mode = self.HELIX_ENDPOINT_SMOOTH_TAPER
         self.helix_endpoint_cycle_pending = False
+        self.helix_profile_lock = False
+        self.helix_profile_lock_cycle_pending = False
         self.helix_point_magnitudes = []
         self.helix_point_frequencies = []
         self.helix_point_slants = []
@@ -389,6 +394,8 @@ class FlexState:
         self.active_point_index = -1
         self.hover_point_index = -1
         self.adjusting_radius_index = -1
+        self.radius_drag_start_screen_distance = None
+        self.radius_drag_start_value = None
         self.hover_radius_index = -1
         self.adjusting_tension_index = -1
         self.hover_tension_index = -1
@@ -409,6 +416,8 @@ class FlexState:
         self.helix_slant = 0.0
         self.helix_endpoint_mode = self.HELIX_ENDPOINT_SMOOTH_TAPER
         self.helix_endpoint_cycle_pending = False
+        self.helix_profile_lock = False
+        self.helix_profile_lock_cycle_pending = False
         self.helix_point_magnitudes = []
         self.helix_point_frequencies = []
         self.helix_point_slants = []
@@ -492,6 +501,7 @@ class UndoRedoManager:
             'helix_frequency': self.state.helix_frequency,
             'helix_slant': self.state.helix_slant,
             'helix_endpoint_mode': self.state.helix_endpoint_mode,
+            'helix_profile_lock': self.state.helix_profile_lock,
             'helix_point_magnitudes': self.state.helix_point_magnitudes.copy() if self.state.helix_point_magnitudes else [],
             'helix_point_frequencies': self.state.helix_point_frequencies.copy() if self.state.helix_point_frequencies else [],
             'helix_point_slants': self.state.helix_point_slants.copy() if self.state.helix_point_slants else [],
@@ -545,6 +555,7 @@ class UndoRedoManager:
             'helix_endpoint_mode',
             FlexState.HELIX_ENDPOINT_SMOOTH_TAPER,
         )
+        self.state.helix_profile_lock = saved_state.get('helix_profile_lock', False)
         self.state.helix_point_magnitudes = saved_state.get(
             'helix_point_magnitudes',
             [],

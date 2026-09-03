@@ -23,6 +23,15 @@ def handle_left_mouse(operator, context, event):
     if event.value == 'PRESS':
         # Check if we're in twist mode
         if state.profile_twist_mode:
+            # With the helix profile lock on, per-point twist and ramp are overridden by
+            # the locked frame, so every twist drag rotates the profile globally instead.
+            if getattr(state, 'helix_profile_lock', False):
+                state.twist_dragging_point = -1
+                state.twist_drag_start_mouse = (mouse_pos[0], mouse_pos[1])
+                state.twist_drag_start_angle = state.profile_global_twist
+                state.save_history_state()
+                return {'RUNNING_MODAL'}
+
             closest_index = math_utils.find_closest_point_with_screen_radius(
                 context, mouse_pos, state.points_3d, state.point_radii_3d
             )
@@ -147,6 +156,8 @@ def handle_left_mouse(operator, context, event):
                 elif hit_type == 'radius' and active_idx != -1:
                     # Start adjusting radius
                     state.adjusting_radius_index = closest_i
+                    state.radius_drag_start_screen_distance = d
+                    state.radius_drag_start_value = state.point_radii_3d[closest_i]
                     state.save_history_state()
                     return {'RUNNING_MODAL'}
         
@@ -328,6 +339,8 @@ def handle_left_mouse(operator, context, event):
         if state.adjusting_radius_index >= 0:
             state.save_history_state()
             state.adjusting_radius_index = -1
+            state.radius_drag_start_screen_distance = None
+            state.radius_drag_start_value = None
         
         if state.adjusting_tension_index >= 0:
             state.save_history_state()
@@ -669,7 +682,16 @@ def handle_mouse_move(operator, context, event):
         
         if point_2d is not None:
             distance_2d = math.sqrt((mouse_pos[0] - point_2d[0])**2 + (mouse_pos[1] - point_2d[1])**2)
-            distance_3d = conversion.get_world_distance(context, distance_2d, point_3d)
+            start_distance = state.radius_drag_start_screen_distance
+            start_radius = state.radius_drag_start_value
+            if start_distance is None or start_radius is None:
+                distance_3d = conversion.get_world_distance(context, distance_2d, point_3d)
+            elif distance_2d <= start_distance:
+                inward_factor = distance_2d / max(1e-8, start_distance)
+                distance_3d = state.MIN_RADIUS + (start_radius - state.MIN_RADIUS) * inward_factor
+            else:
+                distance_delta = (distance_2d - start_distance) * 2.0
+                distance_3d = start_radius + conversion.get_world_distance(context, distance_delta, point_3d)
             clamped = max(state.MIN_RADIUS, min(distance_3d, state.MAX_RADIUS))
             state.point_radii_3d[state.adjusting_radius_index] = clamped
             

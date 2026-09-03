@@ -996,7 +996,18 @@ def modal_handler(operator, context, event):
         if getattr(state, 'profile_twist_mode', False):
             step = math.radians(15.0)
             delta = step if wheel_up else -step
-            
+
+            # Profile lock overrides per-point twist, so the wheel steps the global
+            # rotation of the locked profile instead of building a ramp.
+            if getattr(state, 'helix_profile_lock', False):
+                state.profile_global_twist += delta
+                if len(state.points_3d) >= 2 and len(state.point_radii_3d) >= 2:
+                    mesh_utils.update_preview_mesh(context, state.points_3d, state.point_radii_3d,
+                                                  resolution=operator.resolution, segments=operator.segments)
+                operator.report({'INFO'}, f"Profile Rotation: {math.degrees(state.profile_global_twist):.0f}°")
+                context.area.tag_redraw()
+                return {'RUNNING_MODAL'}
+
             num_points = len(state.points_3d)
             if len(state.profile_point_twists) != num_points:
                 state.profile_point_twists = [0.0] * num_points
@@ -1062,6 +1073,28 @@ def modal_handler(operator, context, event):
     if (
         event.type == state.KEY_HELIX
         and event.value == 'PRESS'
+        and event.alt
+        and not (event.ctrl or event.shift or event.oskey)
+    ):
+        state.helix_profile_lock = not state.helix_profile_lock
+        state.helix_profile_lock_cycle_pending = True
+        state.save_history_state()
+        if len(state.points_3d) >= 2 and len(state.point_radii_3d) >= 2:
+            mesh_utils.update_preview_mesh(
+                context,
+                state.points_3d,
+                state.point_radii_3d,
+                resolution=operator.resolution,
+                segments=operator.segments,
+            )
+        status = "ON" if state.helix_profile_lock else "OFF"
+        operator.report({'INFO'}, f"Helix Profile Lock: {status}")
+        context.area.tag_redraw()
+        return {'RUNNING_MODAL'}
+
+    if (
+        event.type == state.KEY_HELIX
+        and event.value == 'PRESS'
         and event.shift
         and not (event.alt or event.ctrl or event.oskey)
     ):
@@ -1088,6 +1121,7 @@ def modal_handler(operator, context, event):
         and not getattr(state, 'profile_helix_mode', False)
     ):
         state.helix_endpoint_cycle_pending = False
+        state.helix_profile_lock_cycle_pending = False
         state.profile_helix_mode = True
         state.ensure_helix_point_arrays()
         helix_point_index = -1
@@ -1123,6 +1157,13 @@ def modal_handler(operator, context, event):
         else:
             operator.report({'INFO'}, "Helix Mode: ON (Global)")
         context.area.tag_redraw()
+        return {'RUNNING_MODAL'}
+    if (
+        event.type == state.KEY_HELIX
+        and event.value == 'RELEASE'
+        and getattr(state, 'helix_profile_lock_cycle_pending', False)
+    ):
+        state.helix_profile_lock_cycle_pending = False
         return {'RUNNING_MODAL'}
     if (
         event.type == state.KEY_HELIX

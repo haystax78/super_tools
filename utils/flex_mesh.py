@@ -459,6 +459,123 @@ def _adaptive_resample_deformed_curve(curve_points, values, base_segments, is_cl
     return output_points, output_values
 
 
+def _profile_lock_uses_x_axis():
+    profile_points = generate_profile_vertices(
+        getattr(state, 'profile_global_type', state.PROFILE_CIRCULAR),
+        Vector((0.0, 0.0, 0.0)),
+        1.0,
+        Vector((1.0, 0.0, 0.0)),
+        Vector((0.0, 1.0, 0.0)),
+        16,
+        aspect_ratio=getattr(state, 'profile_aspect_ratio', 1.0),
+        twist_angle=0.0,
+        roundness=getattr(state, 'profile_roundness', 0.3),
+    )
+    if not profile_points:
+        return False
+    width = max(point.x for point in profile_points) - min(point.x for point in profile_points)
+    height = max(point.y for point in profile_points) - min(point.y for point in profile_points)
+    return width >= height
+
+
+def _get_profile_coordinate_systems(curve_points, center_curve_points=None, is_closed=False):
+    coordinate_systems = math_utils.create_consistent_coordinate_systems(
+        curve_points,
+        is_closed=is_closed,
+    )
+    if (
+        not getattr(state, 'helix_profile_lock', False)
+        or not center_curve_points
+        or len(center_curve_points) != len(curve_points)
+    ):
+        return coordinate_systems
+
+    outward_vectors = []
+    for point, center_point, coordinate_system in zip(
+        curve_points,
+        center_curve_points,
+        coordinate_systems,
+    ):
+        tangent = coordinate_system[0]
+        outward = point - center_point
+        outward -= tangent * outward.dot(tangent)
+        outward_vectors.append(outward.normalized() if outward.length > 1e-8 else None)
+
+    last_valid = None
+    for index, outward in enumerate(outward_vectors):
+        if outward is not None:
+            last_valid = outward
+        elif last_valid is not None:
+            outward_vectors[index] = last_valid
+    last_valid = None
+    for index in range(len(outward_vectors) - 1, -1, -1):
+        outward = outward_vectors[index]
+        if outward is not None:
+            last_valid = outward
+        elif last_valid is not None:
+            outward_vectors[index] = last_valid
+
+    use_x_axis = _profile_lock_uses_x_axis()
+    locked_systems = []
+    for coordinate_system, outward in zip(coordinate_systems, outward_vectors):
+        tangent, fallback_side, fallback_up = coordinate_system
+        if outward is None:
+            locked_systems.append(coordinate_system)
+            continue
+        side = outward if use_x_axis else outward.cross(tangent)
+        if side.length <= 1e-8:
+            locked_systems.append(coordinate_system)
+            continue
+        side.normalize()
+        up = tangent.cross(side).normalized()
+        alignment = side.dot(outward) if use_x_axis else up.dot(outward)
+        if alignment < 0.0:
+            side.negate()
+            up.negate()
+        locked_systems.append((tangent, side, up))
+    return locked_systems
+
+
+def _get_blender_z_up_coordinate_systems(curve_points, is_closed=False):
+    tangent_systems = math_utils.create_consistent_coordinate_systems(
+        curve_points,
+        is_closed=is_closed,
+    )
+    coordinate_systems = []
+    for tangent, fallback_side, fallback_up in tangent_systems:
+        projected_up = Vector((0.0, 0.0, 1.0))
+        projected_up -= tangent * projected_up.dot(tangent)
+        if projected_up.length <= 1e-8:
+            projected_up = Vector((1.0, 0.0, 0.0))
+            projected_up -= tangent * projected_up.dot(tangent)
+        if projected_up.length <= 1e-8:
+            coordinate_systems.append((tangent, fallback_side, fallback_up))
+            continue
+        up = -projected_up.normalized()
+        side = up.cross(tangent).normalized()
+        coordinate_systems.append((tangent, side, up))
+    return coordinate_systems
+
+
+def _get_profile_lock_tilts(curve_points, center_curve_points, is_closed=False):
+    unlocked_systems = _get_blender_z_up_coordinate_systems(
+        curve_points,
+        is_closed=is_closed,
+    )
+    locked_systems = _get_profile_coordinate_systems(
+        curve_points,
+        center_curve_points,
+        is_closed=is_closed,
+    )
+    tilts = []
+    for unlocked, locked in zip(unlocked_systems, locked_systems):
+        side = unlocked[1]
+        up = unlocked[2]
+        target_up = locked[2]
+        tilts.append(math.atan2(-side.dot(target_up), up.dot(target_up)))
+    return tilts
+
+
 def _get_or_create_mirror_empty():
     """Get or create the mirror object empty at world origin."""
     empty_name = state.mirror_empty_name
@@ -739,7 +856,7 @@ def generate_profile_vertices(profile_type, center, radius, side, up, resolution
         return create_circle_vertices(center, radius, direction, up, side, resolution, twist_angle, aspect_ratio)
 
 
-def create_tube_mesh(curve_points, radii, resolution=16, original_control_points=None, original_radii=None, aspect_ratio=1.0, global_twist=0.0, point_twists=None, is_closed=False):
+def create_tube_mesh(curve_points, radii, resolution=16, original_control_points=None, original_radii=None, aspect_ratio=1.0, global_twist=0.0, point_twists=None, is_closed=False, center_curve_points=None):
     """Create a tube mesh following a curve with varying radius."""
     if len(curve_points) < 2 or len(radii) < 2:
         return [], [], 0
@@ -747,7 +864,11 @@ def create_tube_mesh(curve_points, radii, resolution=16, original_control_points
     if hasattr(create_tube_mesh, '_smooth_roundness_cache'):
         create_tube_mesh._smooth_roundness_cache = None
 
-    coordinate_systems = math_utils.create_consistent_coordinate_systems(curve_points, is_closed=is_closed)
+    coordinate_systems = _get_profile_coordinate_systems(
+        curve_points,
+        center_curve_points,
+        is_closed=is_closed,
+    )
     
     all_original_control_points = original_control_points
     all_original_radii = original_radii
@@ -770,8 +891,10 @@ def create_tube_mesh(curve_points, radii, resolution=16, original_control_points
     for i, (eval_point, eval_radius) in enumerate(zip(curve_points, radii)):
         direction, side, up = coordinate_systems[i]
         
+        # Profile lock replaces the per-point twist with the locked frame, but the
+        # global twist still acts as a uniform rotation of the profile.
         twist_angle = global_twist
-        if i < len(smooth_twists):
+        if not getattr(state, 'helix_profile_lock', False) and i < len(smooth_twists):
             twist_angle += smooth_twists[i]
         
         profile_type = getattr(state, 'profile_global_type', state.PROFILE_CIRCULAR)
@@ -1134,7 +1257,7 @@ def apply_cap_island_uvs_by_proximity(
             )
 
 
-def create_flex_mesh(curve_points, radii, resolution=16, cap_segments=4, original_control_points=None, original_radii=None, aspect_ratio=1.0, global_twist=0.0, point_twists=None, start_cap_type=1, end_cap_type=1):
+def create_flex_mesh(curve_points, radii, resolution=16, cap_segments=4, original_control_points=None, original_radii=None, aspect_ratio=1.0, global_twist=0.0, point_twists=None, start_cap_type=1, end_cap_type=1, center_curve_points=None):
     """Create a flex mesh tube with configurable end caps."""
     if len(curve_points) < 2 or len(radii) < 2:
         return [], [], [], {}
@@ -1150,11 +1273,16 @@ def create_flex_mesh(curve_points, radii, resolution=16, cap_segments=4, origina
         aspect_ratio=aspect_ratio,
         global_twist=global_twist,
         point_twists=point_twists,
-        is_closed=is_closed_loop
+        is_closed=is_closed_loop,
+        center_curve_points=center_curve_points,
     )
     resolution = actual_resolution
 
-    coordinate_systems = math_utils.create_consistent_coordinate_systems(curve_points)
+    coordinate_systems = _get_profile_coordinate_systems(
+        curve_points,
+        center_curve_points,
+        is_closed=is_closed_loop,
+    )
     start_direction, start_side, start_up = coordinate_systems[0]
     end_direction, end_side, end_up = coordinate_systems[-1]
     start_direction = -start_direction
@@ -1178,7 +1306,7 @@ def create_flex_mesh(curve_points, radii, resolution=16, cap_segments=4, origina
 
     if start_cap_type > 0 and not is_closed_loop:
         start_twist = global_twist
-        if point_twists and len(point_twists) > 0:
+        if not getattr(state, 'helix_profile_lock', False) and point_twists and len(point_twists) > 0:
             start_twist += point_twists[0]
 
         start_roundness = None
@@ -1198,7 +1326,7 @@ def create_flex_mesh(curve_points, radii, resolution=16, cap_segments=4, origina
 
     if end_cap_type > 0 and not is_closed_loop:
         end_twist = global_twist
-        if point_twists and len(point_twists) > 0:
+        if not getattr(state, 'helix_profile_lock', False) and point_twists and len(point_twists) > 0:
             end_twist += point_twists[-1]
 
         end_roundness = None
@@ -1378,14 +1506,22 @@ def create_flex_mesh_from_curve(context, curve_points_3d, radii_3d, resolution=1
         smooth_radii_3d[0] = radii_3d[0]
         smooth_radii_3d[-1] = radii_3d[-1]
     
+    profile_center_curve_points = [point.copy() for point in smooth_curve_points_3d]
     helix_curve_points = _apply_helix_to_curve_points(
         smooth_curve_points_3d,
         original_control_points=curve_points_3d,
     )
     if post_helix_adaptive:
+        adaptive_source_points = helix_curve_points
         helix_curve_points, smooth_radii_3d = _adaptive_resample_deformed_curve(
-            helix_curve_points,
+            adaptive_source_points,
             smooth_radii_3d,
+            segments,
+            is_closed_loop,
+        )
+        _, profile_center_curve_points = _adaptive_resample_deformed_curve(
+            adaptive_source_points,
+            profile_center_curve_points,
             segments,
             is_closed_loop,
         )
@@ -1401,7 +1537,8 @@ def create_flex_mesh_from_curve(context, curve_points_3d, radii_3d, resolution=1
         global_twist=getattr(state, 'profile_global_twist', 0.0),
         point_twists=getattr(state, 'profile_point_twists', None),
         start_cap_type=getattr(state, 'start_cap_type', 1),
-        end_cap_type=getattr(state, 'end_cap_type', 1)
+        end_cap_type=getattr(state, 'end_cap_type', 1),
+        center_curve_points=profile_center_curve_points,
     )
     
     mesh = bpy.data.meshes.new("Flex_Mesh")
@@ -1667,6 +1804,7 @@ def _create_geometry_nodes_preview(context):
     centerline_data = bpy.data.curves.new("Flex_Preview_Centerline", 'CURVE')
     centerline_data.dimensions = '3D'
     centerline_data.resolution_u = 32
+    centerline_data.twist_mode = 'MINIMUM'
     preview_obj = bpy.data.objects.new("Flex_Preview", centerline_data)
     context.collection.objects.link(preview_obj)
 
@@ -1908,12 +2046,14 @@ def _update_geometry_nodes_preview(context, curve_points_3d, radii_3d, resolutio
             centerline_points,
             is_closed=is_closed_loop,
         )
+        profile_center_points = [point.copy() for point in centerline_points]
         centerline_points = _apply_helix_to_curve_points(
             centerline_points,
             original_control_points=curve_points_3d,
         )
     else:
         centerline_points = curve_points_3d
+        profile_center_points = curve_points_3d
         centerline_radii = radii_3d
         point_twists = list(getattr(state, 'profile_point_twists', []))
         point_twists.extend([0.0] * max(0, len(curve_points_3d) - len(point_twists)))
@@ -1927,14 +2067,32 @@ def _update_geometry_nodes_preview(context, curve_points_3d, radii_3d, resolutio
             adaptive_source_points,
             centerline_radii,
             segments,
-            False,
+            is_closed_loop,
         )
         _, centerline_twists = _adaptive_resample_deformed_curve(
             adaptive_source_points,
             centerline_twists,
             segments,
-            False,
+            is_closed_loop,
         )
+        _, profile_center_points = _adaptive_resample_deformed_curve(
+            adaptive_source_points,
+            profile_center_points,
+            segments,
+            is_closed_loop,
+        )
+
+    if helix_active and getattr(state, 'helix_profile_lock', False):
+        # The locked frame replaces per-point twist, but global twist stays live as a
+        # uniform rotation of the profile about the tangent.
+        centerline_twists = [
+            tilt + global_twist
+            for tilt in _get_profile_lock_tilts(
+                centerline_points,
+                profile_center_points,
+                is_closed=is_closed_loop,
+            )
+        ]
 
     source_cyclic = is_closed_loop
     rounded_cap_point_count = 0
@@ -1965,6 +2123,9 @@ def _update_geometry_nodes_preview(context, curve_points_3d, radii_3d, resolutio
         preview_obj = _create_geometry_nodes_preview(context)
         preview_obj["flex_gn_preview"] = True
 
+    preview_obj.data.twist_mode = (
+        'Z_UP' if getattr(state, 'helix_profile_lock', False) else 'MINIMUM'
+    )
     if python_centerline:
         _update_poly_curve(
             preview_obj.data,
@@ -2083,6 +2244,7 @@ def _update_preview_mesh_python(context, curve_points_3d, radii_3d, resolution=1
             smooth_radii_3d[0] = radii_3d[0]
             smooth_radii_3d[-1] = radii_3d[-1]
 
+        profile_center_curve_points = [point.copy() for point in smooth_curve_points_3d]
         helix_curve_points = _apply_helix_to_curve_points(
             smooth_curve_points_3d,
             original_control_points=curve_points_3d,
@@ -2100,6 +2262,7 @@ def _update_preview_mesh_python(context, curve_points_3d, radii_3d, resolution=1
             point_twists=state.profile_point_twists,
             start_cap_type=state.start_cap_type,
             end_cap_type=state.end_cap_type,
+            center_curve_points=profile_center_curve_points,
         )
 
         mesh = state.preview_mesh_obj.data

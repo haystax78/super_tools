@@ -100,6 +100,8 @@ class VIEW3D_PT_flex_shortcuts(bpy.types.Panel):
         col.label(text="T (hold): Twist mode")
         col.label(text="O (hold): Helix mode")
         col.label(text="Shift+O: Cycle helix ends")
+        col.label(text="Alt+O: Toggle helix profile lock")
+        col.label(text="T (hold) + drag: Rotate locked profile")
         col.label(text="G: Group move")
         col.label(text="R: Cycle roundness")
         col.label(text="Ctrl+Z: Undo")

@@ -287,6 +287,7 @@ class MESH_OT_flex_create(FlexOperatorBase):
                     'helix_endpoint_mode',
                     state.HELIX_ENDPOINT_SMOOTH_TAPER,
                 )
+                state.helix_profile_lock = curve_data.get('helix_profile_lock', False)
                 state.helix_point_magnitudes = curve_data.get(
                     'helix_point_magnitudes',
                     [],
@@ -745,6 +746,7 @@ class MESH_OT_flex_create(FlexOperatorBase):
                 "helix_frequency": state.helix_frequency,
                 "helix_slant": state.helix_slant,
                 "helix_endpoint_mode": state.helix_endpoint_mode,
+                "helix_profile_lock": state.helix_profile_lock,
                 "helix_point_magnitudes": list(state.helix_point_magnitudes),
                 "helix_point_frequencies": list(state.helix_point_frequencies),
                 "helix_point_slants": list(state.helix_point_slants),
@@ -770,6 +772,11 @@ class MESH_OT_flex_create(FlexOperatorBase):
             self._cleanup(context)
 
 
+def draw_flex_mesh_add(self, context):
+    self.layout.separator()
+    self.layout.operator("mesh.flex_create", text="Flex Mesh", icon='MESH_CAPSULE')
+
+
 classes = (
     MESH_OT_flex_create,
 )
@@ -778,8 +785,13 @@ classes = (
 def register():
     for cls in classes:
         bpy.utils.register_class(cls)
+    bpy.types.VIEW3D_MT_mesh_add.append(draw_flex_mesh_add)
 
 
 def unregister():
+    try:
+        bpy.types.VIEW3D_MT_mesh_add.remove(draw_flex_mesh_add)
+    except (AttributeError, ValueError):
+        pass
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)

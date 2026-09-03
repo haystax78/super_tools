@@ -2,6 +2,18 @@
 
 A Blender addon that provides advanced mesh editing tools for enhanced modeling workflows.
 
+## What's New in v1.4.1
+
+- **Helix Profile Lock (Alt+O)**: Locks the active profile's broad axis to point consistently outward from the helix center curve, eliminating fan/blade rotation along the path.
+  - Uses a deterministic Z-up frame so preview and finalized meshes stay aligned on straight, curved, and closed helices
+  - Selects the profile's longest 2D axis automatically, supporting wide, tall, and custom profiles
+  - Per-point twist is suppressed while locked; the global twist (T drag / wheel) acts as a uniform rotation of the profile
+  - Lock state persists through undo/redo and is saved with Flex mesh metadata
+- **Radius Controls**:
+  - Minimum on-screen radius control size raised to 40 px for easier grabbing
+  - Radius dragging is now delta-based with smooth inward scaling toward the minimum radius, preventing jumps when starting drag on an enlarged minimum-size control
+- **Add Mesh Menu**: Flex Mesh is now available under Add > Mesh with a separator before it
+
 ## What's New in v1.4.0
 
 - **Geometry Nodes Preview Backend**: Flex Tool modal previews now use a hybrid Python/Geometry Nodes pipeline for substantially faster interactive mesh generation while retaining the Python finalizer for authoritative output.
@@ -101,6 +113,18 @@ A Blender addon that provides advanced mesh editing tools for enhanced modeling 
 - Blender 5.0 or later
 
 ## Changelog
+
+### v1.4.1
+- Helix Profile Lock (Alt+O):
+  - Locks the active profile's broad axis radially outward from the helix center curve
+  - Deterministic Z-up framing keeps preview and finalized orientation aligned on straight, curved, and closed paths
+  - Auto-selects the profile's longest 2D axis (wide, tall, or custom profiles)
+  - Per-point twist is suppressed while locked; global twist (T drag / wheel) rotates the profile uniformly
+  - Lock state persists through undo/redo and Flex mesh metadata
+- Radius Controls:
+  - Minimum on-screen radius control size raised to 40 px
+  - Delta-based radius dragging with smooth inward scaling toward the minimum radius, preventing jumps when starting drag on enlarged minimum-size controls
+- Add Mesh Menu: Flex Mesh added to Add > Mesh with a separator before it
 
 ### v1.4.0
 - Geometry Nodes Preview Backend:

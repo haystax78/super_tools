@@ -242,7 +242,7 @@ def get_consistent_screen_radius(context, radius_3d, point_3d, tangent=None):
             return 30.0
         
         screen_radius = (offset_2d - point_2d).length
-        return max(screen_radius, 10.0)
+        return max(screen_radius, state.MIN_RADIUS_CONTROL_PIXELS)
     except Exception:
         return 30.0
 
