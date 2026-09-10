@@ -2,6 +2,11 @@
 
 A Blender addon that provides advanced mesh editing tools for enhanced modeling workflows.
 
+## What's New in v1.4.3
+
+- **Adaptive Preview Parity**: GN previews now use the same Python adaptive centerline points as finalized meshes.
+- **Orthographic Zoom**: Centerline overlays and projection caches update correctly while zooming.
+
 ## What's New in v1.4.2
 
 - **[FIX] Flex Mirror Direction**: Mirror orientation now follows the side containing the majority of the source mesh polygons instead of relying on control-point counts.
@@ -119,6 +124,10 @@ A Blender addon that provides advanced mesh editing tools for enhanced modeling 
 - Blender 5.0 or later
 
 ## Changelog
+
+### v1.4.3
+- Shared Python adaptive centerline points between GN preview and final meshes.
+- Fixed Flex centerline redraw and projection-cache invalidation during orthographic zoom.
 
 ### v1.4.2
 - Flex Mirror Direction:

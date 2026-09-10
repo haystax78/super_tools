@@ -2066,7 +2066,7 @@ def _update_geometry_nodes_preview(context, curve_points_3d, radii_3d, resolutio
             tensions=state.point_tensions,
             is_closed_loop=is_closed_loop,
             use_bspline=getattr(state, 'bspline_mode', False),
-            adaptive=False,
+            adaptive=adaptive_requested and not helix_active,
         )
         centerline_radii = math_utils.calculate_smooth_radii(
             curve_points_3d,
@@ -2099,8 +2099,8 @@ def _update_geometry_nodes_preview(context, curve_points_3d, radii_3d, resolutio
         centerline_twists = point_twists[:len(curve_points_3d)]
 
     centerline_twists = [global_twist + twist for twist in centerline_twists]
-    deformed_adaptive_baked = adaptive_requested and (rounded_caps or helix_active)
-    if deformed_adaptive_baked:
+    deformed_adaptive_baked = adaptive_requested
+    if adaptive_requested and helix_active:
         adaptive_source_points = centerline_points
         centerline_points, centerline_radii = _adaptive_resample_deformed_curve(
             adaptive_source_points,

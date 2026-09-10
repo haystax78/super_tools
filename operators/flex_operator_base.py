@@ -66,8 +66,17 @@ class FlexOperatorBase(bpy.types.Operator):
     
     def check_camera_movement(self, context):
         """Check if the camera has moved and update the current_depth if needed"""
-        current_matrix = context.region_data.view_matrix.copy()
-        if hasattr(self, '_camera_matrix') and self._camera_matrix != current_matrix:
+        rv3d = context.region_data
+        current_matrix = rv3d.view_matrix.copy()
+        current_camera_state = (
+            tuple(value for row in current_matrix for value in row),
+            tuple(value for row in rv3d.perspective_matrix for value in row),
+            float(getattr(rv3d, 'view_distance', 0.0)),
+            getattr(rv3d, 'view_perspective', ''),
+            getattr(context.region, 'width', 0),
+            getattr(context.region, 'height', 0),
+        )
+        if hasattr(self, '_camera_state') and self._camera_state != current_camera_state:
             if state.points_3d:
                 last_point = state.points_3d[-1]
                 if state.object_matrix_world:
@@ -92,12 +101,14 @@ class FlexOperatorBase(bpy.types.Operator):
                         state.face_drag_depth_t = None
             
             self._camera_matrix = current_matrix
+            self._camera_state = current_camera_state
             state.curve_screen_cache_key = None
             if context.area is not None:
                 context.area.tag_redraw()
             return True
-        elif not hasattr(self, '_camera_matrix'):
+        elif not hasattr(self, '_camera_state'):
             self._camera_matrix = current_matrix
+            self._camera_state = current_camera_state
             
         return False
     

@@ -916,6 +916,9 @@ def get_cached_curve_screen_samples(context, curve_points_3d, sample_count=400):
     region_data = getattr(context, 'region_data', None)
     region = getattr(context, 'region', None)
     view_matrix = tuple(value for row in region_data.view_matrix for value in row) if region_data else ()
+    projection_matrix = tuple(value for row in region_data.perspective_matrix for value in row) if region_data else ()
+    view_distance = float(getattr(region_data, 'view_distance', 0.0)) if region_data else 0.0
+    view_perspective = getattr(region_data, 'view_perspective', '') if region_data else ''
     object_matrix = getattr(state, 'object_matrix_world', None)
     object_matrix_key = tuple(value for row in object_matrix for value in row) if object_matrix else ()
     cache_key = (
@@ -926,6 +929,9 @@ def get_cached_curve_screen_samples(context, curve_points_3d, sample_count=400):
         is_closed_loop,
         int(sample_count),
         view_matrix,
+        projection_matrix,
+        view_distance,
+        view_perspective,
         object_matrix_key,
         getattr(region, 'width', 0),
         getattr(region, 'height', 0),
