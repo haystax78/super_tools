@@ -581,6 +581,9 @@ def handle_mouse_move(operator, context, event):
                     resolution=operator.resolution,
                     segments=operator.segments,
                 )
+                if getattr(state, 'mirror_mode_active', False) and state.preview_mesh_obj is not None:
+                    mesh_utils.update_mirror_flip_from_points(
+                        state.preview_mesh_obj, state.points_3d)
             context.area.tag_redraw()
         return {'RUNNING_MODAL'}
     

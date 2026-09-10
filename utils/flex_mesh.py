@@ -618,32 +618,65 @@ def apply_mirror_modifier(obj, enable):
 
 
 def update_mirror_flip_from_points(obj, points_3d):
-    """Check which side of the X axis the majority of curve points are on."""
+    """Keep the side containing most base-mesh polygons before mirroring."""
     mod_name = "Flex_Mirror"
     if obj is None or mod_name not in obj.modifiers:
         return
-    
-    if not points_3d or len(points_3d) == 0:
-        return
-    
+
     mod = obj.modifiers[mod_name]
-    
     negative_count = 0
     positive_count = 0
-    for p in points_3d:
-        x = p[0] if hasattr(p, '__getitem__') else p.x
-        if x < 0.0:
-            negative_count += 1
+    mirror_object = mod.mirror_object
+    mesh_data = None
+    evaluated_obj = None
+    mirror_visibility = None
+    try:
+        if obj.type == 'MESH' and hasattr(obj.data, 'polygons'):
+            mesh_data = obj.data
         else:
-            positive_count += 1
-    
+            mirror_visibility = mod.show_viewport
+            mod.show_viewport = False
+            bpy.context.view_layer.update()
+            depsgraph = bpy.context.evaluated_depsgraph_get()
+            evaluated_obj = obj.evaluated_get(depsgraph)
+            mesh_data = evaluated_obj.to_mesh()
+        if mirror_object is not None and mesh_data is not None:
+            object_matrix = evaluated_obj.matrix_world if evaluated_obj else obj.matrix_world
+            to_mirror_space = mirror_object.matrix_world.inverted_safe() @ object_matrix
+            for polygon in mesh_data.polygons:
+                center = to_mirror_space @ polygon.center
+                if center.x < -1e-8:
+                    negative_count += 1
+                else:
+                    positive_count += 1
+    except Exception:
+        negative_count = 0
+        positive_count = 0
+    finally:
+        if evaluated_obj is not None:
+            try:
+                evaluated_obj.to_mesh_clear()
+            except Exception:
+                pass
+        if mirror_visibility is not None:
+            mod.show_viewport = mirror_visibility
+            bpy.context.view_layer.update()
+
+    if negative_count == 0 and positive_count == 0 and points_3d:
+        for point in points_3d:
+            x = point[0] if hasattr(point, '__getitem__') else point.x
+            if x < 0.0:
+                negative_count += 1
+            else:
+                positive_count += 1
+
     if negative_count > positive_count:
         should_flip = True
     elif positive_count > negative_count:
         should_flip = False
     else:
         should_flip = getattr(state, 'mirror_flip_x', False)
-    
+
     mod.use_bisect_flip_axis[0] = should_flip
     state.mirror_flip_x = should_flip
 
@@ -1479,7 +1512,7 @@ def create_flex_mesh_from_curve(context, curve_points_3d, radii_3d, resolution=1
 
     post_helix_adaptive = should_run_adaptive and _helix_is_active()
     source_segments = int(segments)
-    if post_helix_adaptive:
+    if should_run_adaptive:
         source_segments = min(2048, max(256, source_segments * 4))
 
     smooth_curve_points_3d = _compute_smooth_curve_points(
@@ -2012,7 +2045,13 @@ def _update_geometry_nodes_preview(context, curve_points_3d, radii_3d, resolutio
     )
     helix_active = _helix_is_active()
     use_bspline = getattr(state, 'bspline_mode', False)
-    python_centerline = helix_active or not use_bspline or is_closed_loop or rounded_caps
+    python_centerline = (
+        helix_active
+        or not use_bspline
+        or is_closed_loop
+        or rounded_caps
+        or use_bspline
+    )
     global_twist = float(getattr(state, 'profile_global_twist', 0.0))
 
     if python_centerline:

@@ -2,6 +2,17 @@
 
 A Blender addon that provides advanced mesh editing tools for enhanced modeling workflows.
 
+## What's New in v1.4.2
+
+- **Flex Mirror Direction**: Mirror orientation now follows the side containing the majority of the source mesh polygons instead of relying on control-point counts.
+  - Works with existing Flex meshes and Geometry Nodes preview curves
+  - Recalculates during `G` group moves as the curve crosses the mirror axis
+  - Preserves the source-side selection when the preview is already mirrored
+- **Flex Preview/Final Curve Parity**:
+  - B-spline previews with no caps, planar caps, and rounded caps now use the same Python centerline interpolation
+  - Final adaptive meshes use the same high-resolution source density as adaptive previews
+  - Prevents complex curves from losing adaptive detail when committed
+
 ## What's New in v1.4.1
 
 - **Helix Profile Lock (Alt+O)**: Locks the active profile's broad axis to point consistently outward from the helix center curve, eliminating fan/blade rotation along the path.
@@ -113,6 +124,16 @@ A Blender addon that provides advanced mesh editing tools for enhanced modeling 
 - Blender 5.0 or later
 
 ## Changelog
+
+### v1.4.2
+- Flex Mirror Direction:
+  - Selects mirror direction from the side containing most source-mesh polygons
+  - Evaluates Geometry Nodes preview curves without the active mirror modifier when counting polygon sides
+  - Updates mirror direction during `G` group movement across the mirror axis
+- Flex Preview/Final Curve Parity:
+  - Uses the same Python centerline interpolation for B-spline curves with no caps, planar caps, and rounded caps
+  - Raises final adaptive source sampling to match the preview density budget
+  - Prevents complex adaptive curves from losing detail when finalized
 
 ### v1.4.1
 - Helix Profile Lock (Alt+O):
