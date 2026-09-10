@@ -4,14 +4,9 @@ A Blender addon that provides advanced mesh editing tools for enhanced modeling 
 
 ## What's New in v1.4.2
 
-- **Flex Mirror Direction**: Mirror orientation now follows the side containing the majority of the source mesh polygons instead of relying on control-point counts.
-  - Works with existing Flex meshes and Geometry Nodes preview curves
-  - Recalculates during `G` group moves as the curve crosses the mirror axis
-  - Preserves the source-side selection when the preview is already mirrored
-- **Flex Preview/Final Curve Parity**:
+- **[FIX] Flex Mirror Direction**: Mirror orientation now follows the side containing the majority of the source mesh polygons instead of relying on control-point counts.
+- **[FIX] Flex Preview/Final Curve Parity**:
   - B-spline previews with no caps, planar caps, and rounded caps now use the same Python centerline interpolation
-  - Final adaptive meshes use the same high-resolution source density as adaptive previews
-  - Prevents complex curves from losing adaptive detail when committed
 
 ## What's New in v1.4.1
 
