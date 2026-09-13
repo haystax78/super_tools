@@ -309,6 +309,8 @@ class MESH_OT_flex_create(FlexOperatorBase):
                     state.custom_profile_points = [tuple(p) for p in loaded_custom_points]
                     state.custom_profile_curve_name = curve_data.get('custom_profile_curve_name', None)
                 state.adaptive_segmentation = curve_data.get('adaptive_segmentation', False)
+                state.generate_face_sets = curve_data.get(
+                    'generate_face_sets', state.generate_face_sets)
                 
                 if "bspline_mode" in curve_data:
                     state.bspline_mode = bool(curve_data.get("bspline_mode", False))
@@ -755,6 +757,7 @@ class MESH_OT_flex_create(FlexOperatorBase):
                 "profile_point_roundness": list(state.profile_point_roundness),
                 "custom_profile_points": list(state.custom_profile_points),
                 "adaptive_segmentation": state.adaptive_segmentation,
+                "generate_face_sets": state.generate_face_sets,
                 "bspline_mode": state.bspline_mode,
                 "in_object_space": True,
                 "metadata_origin": {"x": metadata_origin.x, "y": metadata_origin.y, "z": metadata_origin.z}

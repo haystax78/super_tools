@@ -116,6 +116,9 @@ class FlexState:
             FlexState.DEFAULT_RADIUS = getattr(prefs, 'flex_default_radius', 0.5)
             FlexState.MIN_RADIUS = getattr(prefs, 'flex_min_radius', 0.05)
             FlexState.MAX_RADIUS = getattr(prefs, 'flex_max_radius', 10.0)
+        self.generate_face_sets = bool(
+            getattr(prefs, 'flex_generate_face_sets', False)
+        ) if prefs else False
         
         # Curve state
         self.points_3d = []

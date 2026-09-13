@@ -2,6 +2,10 @@
 
 A Blender addon that provides advanced mesh editing tools for enhanced modeling workflows.
 
+## What's New in v1.4.4
+
+- **Flex Face Sets**: Optional per-control-point-span Sculpt Face Sets with caps assigned to adjacent spans.
+
 ## What's New in v1.4.3
 
 - **Adaptive Preview Parity**: GN previews now use the same Python adaptive centerline points as finalized meshes.
@@ -124,6 +128,10 @@ A Blender addon that provides advanced mesh editing tools for enhanced modeling 
 - Blender 5.0 or later
 
 ## Changelog
+
+### v1.4.4
+- Added optional Flex Sculpt Face Sets per control-point span.
+- Assigned start/end caps to their adjacent span face sets.
 
 ### v1.4.3
 - Shared Python adaptive centerline points between GN preview and final meshes.

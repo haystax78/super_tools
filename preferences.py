@@ -333,6 +333,11 @@ class SuperToolsPreferences(bpy.types.AddonPreferences):
         description="Generate UVs by default when finalizing flex meshes",
         default=False
     )
+    flex_generate_face_sets: bpy.props.BoolProperty(
+        name="Generate Face Sets",
+        description="Assign a separate Sculpt Face Set to each control-point span",
+        default=False
+    )
     flex_add_smooth_by_angle: bpy.props.BoolProperty(
         name="Add Smooth by Angle",
         description="Add Smooth by Angle modifier to new flex meshes",
@@ -477,6 +482,7 @@ class SuperToolsPreferences(bpy.types.AddonPreferences):
         col.prop(self, "flex_default_bspline_mode")
         col.prop(self, "flex_default_cap_type")
         col.prop(self, "flex_default_generate_uv")
+        col.prop(self, "flex_generate_face_sets")
         col.prop(self, "flex_add_smooth_by_angle")
         row = col.row()
         row.enabled = self.flex_add_smooth_by_angle

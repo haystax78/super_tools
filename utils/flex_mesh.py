@@ -1497,6 +1497,74 @@ def create_flex_mesh(curve_points, radii, resolution=16, cap_segments=4, origina
     return vertices, faces, fill_boundaries, mesh_info
 
 
+def _closest_control_segment(point, control_points, is_closed):
+    if len(control_points) < 2:
+        return 0
+    segment_count = len(control_points) if is_closed else len(control_points) - 1
+    best_segment = 0
+    best_distance = float('inf')
+    for index in range(segment_count):
+        start = control_points[index]
+        end = control_points[(index + 1) % len(control_points)]
+        edge = end - start
+        length_squared = edge.length_squared
+        if length_squared <= 1e-12:
+            distance = (point - start).length_squared
+        else:
+            factor = max(0.0, min(1.0, (point - start).dot(edge) / length_squared))
+            distance = (point - (start + edge * factor)).length_squared
+        if distance < best_distance:
+            best_distance = distance
+            best_segment = index
+    return best_segment
+
+
+def _assign_flex_face_sets(mesh, curve_points, control_points, resolution, mesh_info, is_closed):
+    tube_face_count = int(mesh_info.get('tube_face_count', 0))
+    if mesh is None or not control_points or tube_face_count <= 0:
+        return
+    attribute = mesh.attributes.get('.sculpt_face_set')
+    if attribute is None:
+        attribute = mesh.attributes.new('.sculpt_face_set', 'INT', 'FACE')
+    for item in attribute.data:
+        item.value = 1
+    ring_count = len(curve_points)
+    tube_faces = min(tube_face_count, len(mesh.polygons))
+    for face_index in range(tube_faces):
+        ring_index = face_index // max(1, resolution)
+        if ring_index + 1 >= ring_count:
+            continue
+        midpoint = (curve_points[ring_index] + curve_points[ring_index + 1]) * 0.5
+        segment_index = _closest_control_segment(
+            midpoint, control_points, is_closed)
+        attribute.data[face_index].value = segment_index + 1
+
+    last_segment_id = max(1, len(control_points) - 1)
+    start_start = int(mesh_info.get('start_cap_face_start', -1))
+    start_count = int(mesh_info.get('start_cap_face_count', 0))
+    end_start = int(mesh_info.get('end_cap_face_start', -1))
+    end_count = int(mesh_info.get('end_cap_face_count', 0))
+    if start_start >= 0:
+        for face_index in range(start_start, min(start_start + start_count, len(attribute.data))):
+            attribute.data[face_index].value = 1
+    if end_start >= 0:
+        for face_index in range(end_start, min(end_start + end_count, len(attribute.data))):
+            attribute.data[face_index].value = last_segment_id
+
+    assigned_ranges = set()
+    if start_start >= 0:
+        assigned_ranges.update(range(start_start, start_start + start_count))
+    if end_start >= 0:
+        assigned_ranges.update(range(end_start, end_start + end_count))
+    for face_index in range(tube_faces, len(mesh.polygons)):
+        if face_index in assigned_ranges:
+            continue
+        center = mesh.polygons[face_index].center
+        start_distance = (center - curve_points[0]).length_squared
+        end_distance = (center - curve_points[-1]).length_squared
+        attribute.data[face_index].value = 1 if start_distance <= end_distance else last_segment_id
+
+
 def create_flex_mesh_from_curve(context, curve_points_3d, radii_3d, resolution=16, segments=32, generate_uv=False, tensions=None, no_tangent_points=None, is_preview=False):
     """Create a flex mesh that follows the curve with varying thickness."""
     if len(curve_points_3d) < 2 or len(radii_3d) < 2:
@@ -1579,6 +1647,16 @@ def create_flex_mesh_from_curve(context, curve_points_3d, radii_3d, resolution=1
     
     if fill_boundaries:
         fill_boundary_loops(mesh, fill_boundaries)
+
+    if getattr(state, 'generate_face_sets', False) and not is_preview:
+        _assign_flex_face_sets(
+            mesh,
+            helix_curve_points,
+            curve_points_3d,
+            mesh_info.get('tube_resolution', resolution),
+            mesh_info,
+            is_closed_loop,
+        )
 
     if generate_uv and not is_preview:
         has_cap_mesh = bool(
